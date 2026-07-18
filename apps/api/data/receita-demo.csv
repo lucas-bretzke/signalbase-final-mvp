@@ -1,0 +1,13 @@
+cnpj;razao_social;nome_fantasia;cidade;uf;cnae;socios;email;telefone;site;linkedin_url;situacao_cadastral
+11222333000181;Tech Azul Solutions LTDA;Tech Azul;Florianópolis;SC;7311400;Marina Costa - Sócia Administradora;marina.costa@techazul.com.br;+55 48 3222-1100;https://techazul.com.br;https://www.linkedin.com/company/tech-azul-solutions;ATIVA
+00000000000191;Banco do Brasil SA;Banco do Brasil;Florianópolis;SC;7311400;Carolina Mendes - Diretora;atendimento.empresas@bb.com.br;;https://bb.com.br;https://www.linkedin.com/company/banco-do-brasil;ATIVA
+22333444000172;Vértice Cloud Consultoria LTDA;Vértice Cloud;Blumenau;SC;7319002;Andre Valente - Sócio Administrador;andre@verticecloud.com.br;+55 47 99999-1001;https://verticecloud.com.br;https://www.linkedin.com/company/vertice-cloud;ATIVA
+33444555000110;Orbital Pay Instituição de Pagamento SA;Orbital Pay;Blumenau;SC;7319003;Bianca Rocha - Diretora;bianca.rocha@orbitalpay.com.br;+55 47 3055-4500;https://orbitalpay.com.br;https://www.linkedin.com/company/orbital-pay;ATIVA
+44555666000120;Ilha Mídia Performance LTDA;Ilha Mídia;Florianópolis;SC;7311400;Lucas Ferreira - Sócio Administrador;contato@ilhamidia.demo;+55 48 99991-0202;https://ilhamidia.demo;;ATIVA
+55666777000131;Norte Criativo Publicidade LTDA;Norte Criativo;Joinville;SC;7319002;Juliana Alves - Sócia;vendas@nortecriativo.demo;+55 47 3020-3030;https://nortecriativo.demo;;ATIVA
+66777888000142;Vale Dados de Mercado LTDA;Vale Dados;Blumenau;SC;7319002;Mateus Lima - Sócio;mateus@valedados.demo;+55 47 98888-4040;https://valedados.demo;;ATIVA
+77888999000153;Serra Comunicação Empresarial LTDA;Serra Comunicação;Lages;SC;7319003;Fernanda Souza - Sócia;fernanda@serracomunicacao.demo;+55 49 3222-5050;;;ATIVA
+88999000000164;Oeste Marketing Digital LTDA;Oeste Marketing;Chapecó;SC;7311400;Renato Gomes - Sócio;comercial@oestemarketing.demo;+55 49 99999-6060;https://oestemarketing.demo;;ATIVA
+99000111000175;Costa Pesquisa e Inteligência LTDA;Costa Inteligência;Itajaí;SC;7319002;Paula Costa - Sócia;paula@costainteligencia.demo;+55 47 3344-7070;;;ATIVA
+10111213000186;Pampa Mídia LTDA;Pampa Mídia;Porto Alegre;RS;7311400;Daniel Martins - Sócio;daniel@pampamidia.demo;+55 51 99999-8080;;;ATIVA
+12131415000197;Empresa Inativa de Teste LTDA;Inativa Teste;Florianópolis;SC;7311400;Pessoa Inativa;contato@inativa.demo;+55 48 99999-0000;;;BAIXADA

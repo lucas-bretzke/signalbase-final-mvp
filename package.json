@@ -1,0 +1,24 @@
+{
+  "name": "signalbase-final-mvp",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Busca de leads B2B por UF, cidade e CNAEs, com base local da Receita, enriquecimento LinkedIn, decisores, score e evidencias.",
+  "engines": {
+    "node": ">=22.11.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n worker,api,web -c auto \"npm run dev:worker\" \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:api": "npm --prefix apps/api run dev",
+    "dev:web": "npm --prefix apps/web run dev -- --host 0.0.0.0",
+    "dev:worker": "node scripts/run-worker.mjs",
+    "build": "npm --prefix apps/web run build && npm --prefix apps/api run build",
+    "start": "npm --prefix apps/api run start",
+    "test": "npm --prefix apps/api run test && npm --prefix apps/web run build",
+    "install:all": "node scripts/install-all.mjs",
+    "preview:static": "npm --prefix apps/web run build && npx serve apps/web/dist -l 5173"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "serve": "^14.2.4"
+  }
+}

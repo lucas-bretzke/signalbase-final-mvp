@@ -1,0 +1,45 @@
+name: signalbase-final-mvp
+
+services:
+  worker:
+    build:
+      context: ./services/linkedin-worker
+    env_file:
+      - .env
+    environment:
+      LINKEDIN_SESSION_FILE: /app/session.pkl
+    ports:
+      - "8010:8010"
+    volumes:
+      - ./services/linkedin-worker/session.pkl:/app/session.pkl
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8010
+
+  app:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    env_file:
+      - .env
+    environment:
+      WORKER_URL: http://worker:8010
+      RECEITA_SOURCE: ${RECEITA_SOURCE:-sqlite}
+      RECEITA_SQLITE_PATH: /data/receita/cnpj.db
+      RECEITA_SQLITE_BUSY_TIMEOUT_MS: ${RECEITA_SQLITE_BUSY_TIMEOUT_MS:-5000}
+      RECEITA_CSV_PATH: /repo/apps/api/data/receita-demo.csv
+      LEAD_SEARCH_DB_PATH: /app/data/lead-search-db.json
+      HOST: 0.0.0.0
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - type: bind
+        source: ${RECEITA_SQLITE_HOST_PATH:-D:/cnpj_ativo_final.db}
+        target: /data/receita/cnpj.db
+        read_only: true
+      - signalbase-operational-data:/app/data
+    depends_on:
+      - worker
+
+volumes:
+  signalbase-operational-data:
+    name: signalbase-final-mvp-data
