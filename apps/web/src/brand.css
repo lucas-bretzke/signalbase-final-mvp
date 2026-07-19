@@ -1,0 +1,14 @@
+.econo-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #0a1d35;
+  line-height: 1;
+}
+
+.econo-brand.inverse { color: #f7fbff; }
+.econo-brand-mark { width: 36px; height: 36px; flex: 0 0 36px; overflow: visible; }
+.econo-brand-word { font-size: 19px; font-weight: 800; letter-spacing: -.045em; }
+.econo-brand.compact { gap: 0; }
+.econo-brand.compact .econo-brand-mark { width: 30px; height: 30px; flex-basis: 30px; }
+

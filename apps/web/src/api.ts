@@ -240,6 +240,6 @@ export async function exportLeadSearch(leadSearchId: string, selectedOnly: boole
   }
   const disposition = response.headers.get('content-disposition') ?? '';
   const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);
-  const filename = match?.[1] ? decodeURIComponent(match[1].replace(/\"/g, '').trim()) : `signalbase-leads-${leadSearchId}.csv`;
+  const filename = match?.[1] ? decodeURIComponent(match[1].replace(/\"/g, '').trim()) : `econosense-leads-${leadSearchId}.csv`;
   return { blob: await response.blob(), filename };
 }

@@ -1,12 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="SignalBase">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="EconoSense">
   <defs>
-    <linearGradient id="bg" x1="12" y1="8" x2="52" y2="58" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#2f7cf4"/>
-      <stop offset="1" stop-color="#1254c8"/>
+    <linearGradient id="bars" x1="12" y1="9" x2="52" y2="55" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#45dbff"/>
+      <stop offset="1" stop-color="#087bd3"/>
     </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="15" fill="#061528"/>
-  <rect x="8" y="8" width="48" height="48" rx="12" fill="url(#bg)"/>
-  <path d="M20 38h6v8h-6zM29 29h6v17h-6zM38 19h6v27h-6z" fill="#fff"/>
-  <path d="M18 48h28" stroke="#dceaff" stroke-width="3" stroke-linecap="round" opacity=".78"/>
+  <rect width="64" height="64" rx="15" fill="#04101c"/>
+  <rect x="26" y="11" width="20" height="5" rx="2.5" fill="url(#bars)"/>
+  <rect x="18" y="20" width="28" height="5" rx="2.5" fill="url(#bars)"/>
+  <rect x="9" y="29" width="37" height="5" rx="2.5" fill="url(#bars)"/>
+  <rect x="18" y="38" width="28" height="5" rx="2.5" fill="url(#bars)"/>
+  <rect x="26" y="47" width="20" height="5" rx="2.5" fill="url(#bars)"/>
+  <circle cx="50" cy="31.5" r="3" fill="#91efff"/>
 </svg>
