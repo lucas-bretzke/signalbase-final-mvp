@@ -15,7 +15,7 @@
     "start": "npm --prefix apps/api run start",
     "test": "npm --prefix apps/api run test && npm --prefix apps/web run build",
     "install:all": "node scripts/install-all.mjs",
-    "preview:static": "npm --prefix apps/web run build && npx serve apps/web/dist -l 5173"
+    "preview:static": "npm run build && npm --prefix apps/api run start"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

@@ -57,6 +57,8 @@ $env:NODE_OPTIONS='--experimental-sqlite'
 npm run dev
 ```
 
+No modo local, a interface Vite fica em `http://localhost:5173` e a API em `http://localhost:7001`.
+
 Encerre com `Ctrl+C` ou envie `SIGTERM` no ambiente de execução. A API interrompe os jobs em andamento, fecha a fonte SQLite/Worker Thread e só então libera o servidor HTTP.
 
 Para consultar temporariamente a base SQLite real desta máquina, acrescente ou ajuste no `.env`:
@@ -140,7 +142,7 @@ Não use diretamente `D:/cnpj_ativo_final.db` como caminho interno: esse é o ca
 ## Exemplo de busca
 
 ```bash
-curl -X POST http://localhost:3000/api/lead-searches \
+curl -X POST http://localhost:7001/api/lead-searches \
   -H "content-type: application/json" \
   -d '{
     "uf": "SC",

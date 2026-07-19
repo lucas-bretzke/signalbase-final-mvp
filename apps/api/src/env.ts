@@ -22,7 +22,7 @@ function receitaSourceKind(value: string | undefined): ReceitaSourceKind {
 }
 
 export const env = {
-  port: Number(process.env.PORT ?? 3000),
+  port: Number(process.env.PORT ?? 7001),
   host: process.env.HOST ?? '0.0.0.0',
   workerUrl: process.env.WORKER_URL ?? 'http://127.0.0.1:8010',
   searchProvider: (process.env.SEARCH_PROVIDER ?? 'demo').toLowerCase(),

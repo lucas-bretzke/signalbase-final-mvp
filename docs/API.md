@@ -2,7 +2,7 @@
 
 ## Convenções
 
-- Base local de desenvolvimento: `http://localhost:3000`.
+- Base local de desenvolvimento: `http://localhost:7001`.
 - O prefixo canônico da aplicação web é `/api`.
 - JSON usa `content-type: application/json` e datas ISO 8601 em UTC.
 - CNAE e CNPJ podem chegar formatados, mas são persistidos/consultados na forma canônica.
