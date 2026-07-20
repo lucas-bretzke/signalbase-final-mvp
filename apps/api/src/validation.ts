@@ -2,6 +2,14 @@ import { z } from 'zod';
 import { onlyDigits, uniq } from './utils.js';
 
 const quality = z.enum(['baixa', 'normal', 'alta', 'muito_alta']);
+const emailType = z.enum(['any', 'corporate', 'non_corporate']);
+const targetMode = z.enum(['fixed', 'max']);
+const targetQuantity = z.union([
+  z.number().int().min(1).max(10_000),
+  z.string().trim().toLowerCase().refine((value) => value === 'max', {
+    message: 'Quantidade deve ser um numero ou max.',
+  }),
+]);
 const BRAZILIAN_UFS = new Set([
   'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG',
   'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO',
@@ -43,29 +51,35 @@ export const leadSearchCreateSchema = z.object({
   }),
   city: optionalText(120),
   cnaes: z.array(cnae).min(1).max(50).transform((values) => uniq(values)),
-  targetQuantity: z.number().int().min(1).max(10_000),
+  targetQuantity,
+  targetMode: targetMode.optional(),
   minScore: z.number().int().min(0).max(100).optional().default(0),
   requirePhone: z.boolean().optional().default(false),
   requireEmail: z.boolean().optional().default(false),
   requireDecisionMakerMatch: z.boolean().optional().default(false),
   onlyMobilePhone: z.boolean().optional(),
   requireMobilePhone: z.boolean().optional(),
+  emailType: emailType.optional(),
   onlyCorporateEmail: z.boolean().optional(),
   requireCorporateEmail: z.boolean().optional(),
   excludeGenericContacts: z.boolean().optional().default(false),
 }).transform((value) => {
   const onlyMobilePhone = value.onlyMobilePhone ?? value.requireMobilePhone ?? false;
-  const onlyCorporateEmail = value.onlyCorporateEmail ?? value.requireCorporateEmail ?? false;
+  const selectedEmailType = value.emailType ?? ((value.onlyCorporateEmail ?? value.requireCorporateEmail ?? false) ? 'corporate' : 'any');
+  const onlyCorporateEmail = selectedEmailType === 'corporate';
+  const selectedTargetMode = value.targetMode ?? (value.targetQuantity === 'max' ? 'max' : 'fixed');
   return {
     uf: value.uf,
     city: value.city,
     cnaes: value.cnaes,
-    targetQuantity: value.targetQuantity,
+    targetQuantity: selectedTargetMode === 'max' ? 0 : Number(value.targetQuantity),
+    targetMode: selectedTargetMode,
     minScore: value.minScore,
     requirePhone: value.requirePhone || onlyMobilePhone,
-    requireEmail: value.requireEmail || onlyCorporateEmail,
+    requireEmail: value.requireEmail || selectedEmailType !== 'any',
     requireDecisionMakerMatch: value.requireDecisionMakerMatch,
     onlyMobilePhone,
+    emailType: selectedEmailType,
     onlyCorporateEmail,
     excludeGenericContacts: value.excludeGenericContacts,
   };

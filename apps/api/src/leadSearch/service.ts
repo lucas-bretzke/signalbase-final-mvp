@@ -81,7 +81,7 @@ export class LeadSearchService {
     const normalized = normalizeLeadSearchFilters({
       ...filters,
       requirePhone: filters.requirePhone || filters.onlyMobilePhone,
-      requireEmail: filters.requireEmail || filters.onlyCorporateEmail,
+      requireEmail: filters.requireEmail || filters.onlyCorporateEmail || filters.emailType === 'non_corporate',
     });
     const streamingCandidates = this.companySource.candidateCountStrategy === 'streaming';
     const totalCandidatesFound = streamingCandidates ? 0 : await this.companySource.count({
@@ -213,13 +213,13 @@ export class LeadSearchService {
     while (!this.stopping) {
       const search = await this.repository.getSearch(searchId);
       if (!search) return;
-      if (search.totalValidLeads >= search.targetQuantity) {
-        await this.finish(searchId, 'completed');
+      if (targetReached(search)) {
+        await this.finish(searchId, 'target_reached');
         return;
       }
       const streamingCandidates = search.candidateCountStatus === 'lower_bound';
       if (!streamingCandidates && search.totalProcessed >= search.totalCandidatesFound) {
-        await this.finish(searchId, 'exhausted');
+        await this.finish(searchId, 'candidate_pool_exhausted');
         return;
       }
 
@@ -242,7 +242,7 @@ export class LeadSearchService {
             updatedAt: new Date().toISOString(),
           });
         }
-        await this.finish(searchId, 'exhausted');
+        await this.finish(searchId, 'candidate_pool_exhausted');
         return;
       }
 
@@ -259,14 +259,14 @@ export class LeadSearchService {
         if (this.stopping) return;
         const latest = await this.repository.getSearch(searchId);
         if (!latest) return;
-        if (latest.totalValidLeads >= latest.targetQuantity) {
-          await this.finish(searchId, 'completed');
+        if (targetReached(latest)) {
+          await this.finish(searchId, 'target_reached');
           return;
         }
         const outcome = await this.processSafely(latest, candidate);
         const updated = await this.repository.recordProcessed(searchId, outcome.result, outcome.crossMatch);
-        if (updated.totalValidLeads >= updated.targetQuantity) {
-          await this.finish(searchId, 'completed');
+        if (targetReached(updated)) {
+          await this.finish(searchId, 'target_reached');
           return;
         }
         await yieldEventLoop();
@@ -295,9 +295,14 @@ export class LeadSearchService {
     }
   }
 
-  private async finish(searchId: string, status: 'completed' | 'exhausted'): Promise<void> {
+  private async finish(searchId: string, completionReason: NonNullable<LeadSearch['completionReason']>): Promise<void> {
     const now = new Date().toISOString();
-    await this.repository.updateSearch(searchId, { status, completedAt: now, updatedAt: now });
+    await this.repository.updateSearch(searchId, {
+      status: 'completed',
+      completionReason,
+      completedAt: now,
+      updatedAt: now,
+    });
   }
 
   private async views(results: LeadSearchResult[]): Promise<LeadSearchResultView[]> {
@@ -324,21 +329,37 @@ export class LeadSearchService {
 }
 
 export function withProgress(search: LeadSearch): LeadSearchProgress {
-  const remainingQuantity = Math.max(0, search.targetQuantity - search.totalValidLeads);
+  const targetMode = targetModeOf(search);
+  const fixedTarget = targetMode === 'fixed';
+  const completionReason = search.completionReason ?? (search.status === 'exhausted' ? 'candidate_pool_exhausted' : undefined);
+  const candidateProgressPercent = search.totalCandidatesFound
+    ? round(Math.min(100, (search.totalProcessed / search.totalCandidatesFound) * 100))
+    : search.candidateCountStatus === 'lower_bound' ? 0 : 100;
+  const remainingQuantity = fixedTarget ? Math.max(0, search.targetQuantity - search.totalValidLeads) : 0;
   return {
     ...search,
+    targetMode,
+    completionReason,
     remainingQuantity,
     candidatesRemaining: Math.max(0, search.totalCandidatesFound - search.totalProcessed),
     yieldRate: search.totalProcessed ? round((search.totalValidLeads / search.totalProcessed) * 100) : 0,
-    progressPercent: search.targetQuantity ? round(Math.min(100, (search.totalValidLeads / search.targetQuantity) * 100)) : 100,
-    candidateProgressPercent: search.totalCandidatesFound
-      ? round(Math.min(100, (search.totalProcessed / search.totalCandidatesFound) * 100))
-      : search.candidateCountStatus === 'lower_bound' ? 0 : 100,
+    progressPercent: fixedTarget && search.targetQuantity
+      ? round(Math.min(100, (search.totalValidLeads / search.targetQuantity) * 100))
+      : candidateProgressPercent,
+    candidateProgressPercent,
   };
 }
 
 function isTerminal(status: LeadSearchStatus): boolean {
   return status === 'completed' || status === 'exhausted' || status === 'failed';
+}
+
+function targetModeOf(search: Pick<LeadSearch, 'targetMode'>): LeadSearch['targetMode'] {
+  return search.targetMode ?? 'fixed';
+}
+
+function targetReached(search: LeadSearch): boolean {
+  return targetModeOf(search) === 'fixed' && search.totalValidLeads >= search.targetQuantity;
 }
 
 function round(value: number): number {

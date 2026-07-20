@@ -153,6 +153,7 @@ function candidatePriority(company: ReceitaCompany, preferences?: CandidateQuery
   if (preferences?.requireEmail && isValidEmail(company.email)) score += 25;
   if (preferences?.onlyMobilePhone && isMobilePhone(company.phone)) score += 25;
   if (preferences?.onlyCorporateEmail && isCorporateEmail(company.email)) score += 25;
+  if (preferences?.emailType === 'non_corporate' && isValidEmail(company.email) && !isCorporateEmail(company.email)) score += 25;
   if (preferences?.excludeGenericContacts && company.email && !isGenericEmail(company.email)) score += 10;
   return score;
 }

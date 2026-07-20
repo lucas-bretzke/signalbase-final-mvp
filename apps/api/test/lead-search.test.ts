@@ -46,8 +46,50 @@ describe('lead search validation', () => {
       requirePhone: true,
       requireEmail: true,
       onlyMobilePhone: true,
+      emailType: 'corporate',
       onlyCorporateEmail: true,
     });
+  });
+
+  it('normalizes non-corporate email preference as an email requirement', () => {
+    const parsed = leadSearchCreateSchema.parse({
+      uf: 'SC',
+      cnaes: ['7311400'],
+      targetQuantity: 10,
+      emailType: 'non_corporate',
+    });
+
+    expect(parsed).toMatchObject({
+      requireEmail: true,
+      emailType: 'non_corporate',
+      onlyCorporateEmail: false,
+    });
+  });
+
+  it('accepts max target for city and state searches, but not without a UF', () => {
+    const citySearch = leadSearchCreateSchema.parse({
+      uf: 'SC',
+      city: 'Florianópolis',
+      cnaes: ['7311400'],
+      targetQuantity: 'max',
+    });
+    const stateSearch = leadSearchCreateSchema.parse({
+      uf: 'SC',
+      cnaes: ['7311400'],
+      targetQuantity: 'max',
+    });
+
+    expect(citySearch).toMatchObject({
+      targetQuantity: 0,
+      targetMode: 'max',
+    });
+    expect(stateSearch).toMatchObject({
+      uf: 'SC',
+      city: undefined,
+      targetQuantity: 0,
+      targetMode: 'max',
+    });
+    expect(leadSearchCreateSchema.safeParse({ cnaes: ['7311400'], targetQuantity: 'max' }).success).toBe(false);
   });
 
   it('rejects unknown UFs and malformed CNAEs', () => {
@@ -92,6 +134,34 @@ describe('final lead qualification', () => {
     expect(rejected.result.status).toBe('rejected');
     expect(rejected.result.rejectionReasons[0]).toContain('abaixo do minimo');
   });
+
+  it('can require non-corporate emails only', () => {
+    const candidate = company(1);
+    const baseLead = enrichedLead();
+    const decisionMaker = baseLead.decisionMakers[0];
+    const personalLead = {
+      ...baseLead,
+      bestDecisionMaker: {
+        ...decisionMaker,
+        emails: ['ana.silva@gmail.com'],
+      },
+      decisionMakers: [{
+        ...decisionMaker,
+        emails: ['ana.silva@gmail.com'],
+      }],
+      companyEmail: 'contato@acme.demo',
+    };
+    const search = searchModel({ emailType: 'non_corporate', requireEmail: true });
+
+    const accepted = evaluateEnrichedLead(search, candidate, personalLead, '2026-07-17T12:00:00.000Z');
+    expect(accepted.result.status).toBe('valid');
+    expect(accepted.crossMatch?.finalEmail).toBe('ana.silva@gmail.com');
+    expect(accepted.crossMatch?.emailCorporate).toBe(false);
+
+    const rejected = evaluateEnrichedLead(search, candidate, enrichedLead());
+    expect(rejected.result.status).toBe('rejected');
+    expect(rejected.result.rejectionReasons).toContain('E-mail nao corporativo valido obrigatorio nao encontrado.');
+  });
 });
 
 describe('job, progress, routes and export', () => {
@@ -107,7 +177,8 @@ describe('job, progress, routes and export', () => {
 
     await service.waitForIdle();
     expect(await service.get(created.id)).toMatchObject({
-      status: 'exhausted',
+      status: 'completed',
+      completionReason: 'candidate_pool_exhausted',
       totalCandidatesFound: 4,
       candidateCountStatus: 'exact',
       totalProcessed: 4,
@@ -125,13 +196,30 @@ describe('job, progress, routes and export', () => {
     expect(finished?.yieldRate).toBeCloseTo(66.67, 1);
   });
 
-  it('marks a search exhausted when candidates end before the target', async () => {
+  it('completes with an exhausted-candidates reason when candidates end before the target', async () => {
     const { service } = await createService();
     const created = await service.create(filters({ targetQuantity: 5 }));
     await service.waitForIdle();
     const finished = await service.get(created.id);
 
-    expect(finished).toMatchObject({ status: 'exhausted', totalProcessed: 4, totalValidLeads: 2, remainingQuantity: 3 });
+    expect(finished).toMatchObject({ status: 'completed', completionReason: 'candidate_pool_exhausted', totalProcessed: 4, totalValidLeads: 2, remainingQuantity: 3 });
+  });
+
+  it('processes the full state candidate pool in max target mode', async () => {
+    const { service } = await createService();
+    const created = await service.create(filters({ city: undefined, targetMode: 'max', targetQuantity: 0 }));
+    await service.waitForIdle();
+    const finished = await service.get(created.id);
+
+    expect(finished).toMatchObject({
+      status: 'completed',
+      completionReason: 'candidate_pool_exhausted',
+      targetMode: 'max',
+      totalProcessed: 4,
+      totalValidLeads: 2,
+      remainingQuantity: 0,
+      progressPercent: 100,
+    });
   });
 
   it('exposes prefixed and unprefixed routes and exports persisted valid leads', async () => {
@@ -216,9 +304,9 @@ async function createService() {
 
 function filters(overrides: Partial<LeadSearchFilters> = {}): LeadSearchFilters {
   return {
-    uf: 'SC', city: 'Florianópolis', cnaes: ['7311400'], targetQuantity: 2, minScore: 75,
+    uf: 'SC', city: 'Florianópolis', cnaes: ['7311400'], targetQuantity: 2, targetMode: 'fixed', minScore: 75,
     requirePhone: false, requireEmail: false, requireDecisionMakerMatch: false,
-    onlyMobilePhone: false, onlyCorporateEmail: false, excludeGenericContacts: false,
+    onlyMobilePhone: false, emailType: 'any', onlyCorporateEmail: false, excludeGenericContacts: false,
     ...overrides,
   };
 }

@@ -11,6 +11,7 @@ import {
 } from './api';
 import {
   CreateLeadSearchInput,
+  EmailTypeFilter,
   EvidenceItem,
   LeadCrossMatchSnapshot,
   LeadSearch,
@@ -198,8 +199,8 @@ function DashboardPage({ searches, loading, navigate }: {
                 <button className="search-row" key={search.id} onClick={() => navigate('review', search.id)}>
                   <span className="search-symbol">{search.uf}</span>
                   <span className="search-main"><strong>{search.city || `Todo o estado de ${search.uf}`}</strong><small>{search.cnaes.join(' · ')} · criada {formatRelative(search.createdAt)}</small></span>
-                  <span className="search-target"><strong>{search.totalValidLeads}/{search.targetQuantity}</strong><small>leads válidos</small></span>
-                  <span className="row-progress"><i style={{ width: `${search.progressPercent ?? progress(search)}%` }} /></span>
+                  <span className="search-target"><strong>{search.totalValidLeads}/{targetLabelOf(search)}</strong><small>{isMaxTarget(search) ? 'máximo possível' : 'leads válidos'}</small></span>
+                  <span className="row-progress"><i style={{ width: `${progressValueOf(search)}%` }} /></span>
                   <StatusBadge status={search.status} />
                   <span className="row-arrow">›</span>
                 </button>
@@ -228,29 +229,36 @@ function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void 
   const [uf, setUf] = useState('SC');
   const [city, setCity] = useState('');
   const [rawCnaes, setRawCnaes] = useState('7311400, 7319002');
-  const [targetQuantity, setTargetQuantity] = useState(100);
+  const [targetQuantityInput, setTargetQuantityInput] = useState('100');
   const [minScore, setMinScore] = useState(75);
   const [requirePhone, setRequirePhone] = useState(true);
   const [requireEmail, setRequireEmail] = useState(false);
   const [requireDecisionMakerMatch, setRequireDecisionMakerMatch] = useState(true);
   const [onlyMobilePhone, setOnlyMobilePhone] = useState(false);
-  const [onlyCorporateEmail, setOnlyCorporateEmail] = useState(false);
+  const [emailType, setEmailType] = useState<EmailTypeFilter>('any');
   const [excludeGenericContacts, setExcludeGenericContacts] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const cnaes = useMemo(() => parseCnaes(rawCnaes), [rawCnaes]);
   const invalidCnaes = useMemo(() => rawCnaes.split(/[\s,;]+/).filter(Boolean).filter((value) => value.replace(/\D/g, '').length !== 7), [rawCnaes]);
+  const effectiveRequireEmail = requireEmail || emailType !== 'any';
+  const scoreHint = scoreQualityHint(minScore);
+  const citySearch = Boolean(city.trim());
+  const targetIsMax = targetQuantityInput.trim().toLowerCase() === 'max';
+  const parsedTargetQuantity = Number(targetQuantityInput);
+  const targetQuantity = targetIsMax ? 0 : parsedTargetQuantity;
+  const targetLabel = targetIsMax ? 'max' : (Number.isFinite(parsedTargetQuantity) && parsedTargetQuantity > 0 ? formatNumber(parsedTargetQuantity) : '0');
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError(undefined);
     if (!UFS.includes(uf)) return setError('Selecione uma UF válida.');
     if (!cnaes.length || invalidCnaes.length) return setError('Informe ao menos um CNAE válido com sete dígitos.');
-    if (targetQuantity < 1) return setError('A quantidade desejada deve ser maior que zero.');
+    if (!targetIsMax && (!Number.isInteger(parsedTargetQuantity) || parsedTargetQuantity < 1)) return setError('A quantidade desejada deve ser um número maior que zero ou max.');
     const input: CreateLeadSearchInput = {
-      uf, city: city.trim() || undefined, cnaes, targetQuantity, minScore,
+      uf, city: city.trim() || undefined, cnaes, targetQuantity: targetIsMax ? 'max' : targetQuantity, targetMode: targetIsMax ? 'max' : 'fixed', minScore,
       requirePhone, requireEmail, requireDecisionMakerMatch,
-      onlyMobilePhone, onlyCorporateEmail, excludeGenericContacts,
+      onlyMobilePhone, emailType, onlyCorporateEmail: emailType === 'corporate', excludeGenericContacts,
     };
     setSubmitting(true);
     try {
@@ -284,20 +292,27 @@ function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void 
           <section className="panel form-section">
             <SectionTitle number="03" title="O que conta como um lead válido?" text="A meta só avança quando todos os critérios selecionados forem atendidos." />
             <div className="field-grid two quantity-fields">
-              <label className="field"><span>Quantidade desejada <b>*</b></span><div className="input-suffix"><input type="number" min="1" max="10000" value={targetQuantity} onChange={(event) => setTargetQuantity(Number(event.target.value))} /><i>contatos</i></div><small>Meta de contatos finais, não de empresas.</small></label>
-              <label className="field"><span>Score mínimo <em>opcional</em></span><div className="score-control"><input type="range" min="0" max="100" value={minScore} onChange={(event) => setMinScore(Number(event.target.value))} /><strong>{minScore}</strong></div><small>Confiança mínima para o lead ser aceito.</small></label>
+              <label className="field"><span>Quantidade desejada <b>*</b></span><div className="input-suffix"><input value={targetQuantityInput} onChange={(event) => setTargetQuantityInput(event.target.value)} placeholder="100 ou max" /><i>{targetIsMax ? 'tudo' : 'contatos'}</i></div><small>Use max para processar todas as candidatas {citySearch ? 'da cidade' : 'do estado'}; país inteiro ainda não.</small></label>
+              <label className="field"><span>Score mínimo <em>opcional</em></span><div className="score-control"><input type="range" min="0" max="100" value={minScore} onChange={(event) => setMinScore(Number(event.target.value))} /><strong>{minScore}</strong></div><small>Leads abaixo deste corte são rejeitados.</small><div className={`score-impact ${scoreHint.tone}`}><span><i style={{ width: `${scoreHint.coverage}%` }} /></span><strong>{scoreHint.label}</strong><small>{scoreHint.text}</small></div></label>
             </div>
             <div className="check-grid">
               <CheckCard checked={requirePhone} onChange={setRequirePhone} icon="☎" title="Exigir telefone" text="Só aceita lead com número tecnicamente válido." />
-              <CheckCard checked={requireEmail} onChange={setRequireEmail} icon="@" title="Exigir e-mail" text="Só aceita lead com endereço tecnicamente válido." />
+              <CheckCard checked={effectiveRequireEmail} onChange={(value) => { setRequireEmail(value); if (!value) setEmailType('any'); }} icon="@" title="Exigir e-mail" text="Só aceita lead com endereço tecnicamente válido." />
               <CheckCard checked={requireDecisionMakerMatch} onChange={setRequireDecisionMakerMatch} icon="≋" title="Decisor validado" text="Exige correspondência entre sócio e decisor." />
             </div>
             <details className="advanced-filters">
               <summary>Filtros avançados <span>Mais precisão para os contatos finais</span></summary>
               <div className="advanced-grid">
-                <Toggle checked={onlyMobilePhone} onChange={(value) => { setOnlyMobilePhone(value); if (value) setRequirePhone(true); }} label="Somente celular" />
-                <Toggle checked={onlyCorporateEmail} onChange={(value) => { setOnlyCorporateEmail(value); if (value) setRequireEmail(true); }} label="Somente e-mail corporativo" />
-                <Toggle checked={excludeGenericContacts} onChange={setExcludeGenericContacts} label="Excluir contatos genéricos" />
+                <Toggle checked={onlyMobilePhone} onChange={(value) => { setOnlyMobilePhone(value); if (value) setRequirePhone(true); }} label="Somente celular" info="Mantém apenas telefones móveis; telefones fixos válidos deixam de contar na meta." infoPlacement="right" />
+                <div className="filter-option email-type-filter">
+                  <div className="filter-label"><span>E-mails aceitos</span><InfoHint text="Corporativos usam domínio da empresa; não corporativos incluem provedores pessoais como Gmail, Hotmail e Outlook." placement="left" /></div>
+                  <div className="option-segmented" role="group" aria-label="Tipo de e-mail aceito">
+                    <button type="button" className={emailType === 'corporate' ? 'active' : ''} onClick={() => { setEmailType('corporate'); setRequireEmail(true); }}>Corporativos</button>
+                    <button type="button" className={emailType === 'non_corporate' ? 'active' : ''} onClick={() => { setEmailType('non_corporate'); setRequireEmail(true); }}>Não corporativos</button>
+                    <button type="button" className={emailType === 'any' ? 'active' : ''} onClick={() => setEmailType('any')}>Ambos</button>
+                  </div>
+                </div>
+                <Toggle checked={excludeGenericContacts} onChange={setExcludeGenericContacts} label="Excluir contatos genéricos" info="Remove caixas como contato@, vendas@ e suporte@ quando elas seriam o e-mail final." infoPlacement="left" />
               </div>
             </details>
             {error && <Notice tone="error">{error}</Notice>}
@@ -309,9 +324,9 @@ function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void 
         <aside className="search-summary panel">
           <span className="eyebrow">Resumo do recorte</span><h2>{city || `Estado de ${uf}`} <small>{uf}</small></h2>
           <div className="summary-block"><span>CNAEs</span><strong>{cnaes.length || 0} segmento{cnaes.length === 1 ? '' : 's'}</strong></div>
-          <div className="target-visual"><span>Meta final</span><strong>{targetQuantity}</strong><small>leads válidos</small></div>
-          <div className="criteria-list"><Criteria active={minScore > 0} text={`Score mínimo ${minScore}`} /><Criteria active={requirePhone} text={onlyMobilePhone ? 'Celular obrigatório' : 'Telefone obrigatório'} /><Criteria active={requireEmail} text={onlyCorporateEmail ? 'E-mail corporativo' : 'E-mail obrigatório'} /><Criteria active={requireDecisionMakerMatch} text="Sócio × decisor validado" /><Criteria active={excludeGenericContacts} text="Sem contatos genéricos" /></div>
-          <div className="summary-note"><strong>Por que podem ser processadas mais empresas?</strong><p>Empresas sem contato, score ou match suficiente não contam na meta. O job continua até chegar a {targetQuantity} leads ou esgotar as candidatas.</p></div>
+          <div className="target-visual"><span>Meta final</span><strong>{targetLabel}</strong><small>{targetIsMax ? 'máximo possível' : 'leads válidos'}</small></div>
+          <div className="criteria-list"><Criteria active={minScore > 0} text={`Score mínimo ${minScore}`} /><Criteria active={requirePhone} text={onlyMobilePhone ? 'Celular obrigatório' : 'Telefone obrigatório'} /><Criteria active={effectiveRequireEmail} text={emailCriteriaText(emailType)} /><Criteria active={requireDecisionMakerMatch} text="Sócio × decisor validado" /><Criteria active={excludeGenericContacts} text="Sem contatos genéricos" /></div>
+          <div className="summary-note"><strong>Por que podem ser processadas mais empresas?</strong><p>{targetIsMax ? `No modo max, o job processa todas as candidatas ${citySearch ? 'da cidade' : 'do estado'} e entrega todos os leads que passarem pelos filtros.` : `Empresas sem contato, score ou match suficiente não contam na meta. O job continua até chegar a ${targetLabel} leads ou esgotar as candidatas.`}</p></div>
         </aside>
       </form>
     </>
@@ -329,7 +344,7 @@ function SearchesPage({ searches, loading, onRefresh, navigate }: {
       <section className="page-heading heading-actions"><div><span className="eyebrow">Operação</span><h1>Buscas em andamento</h1><p>Acompanhe o funil real entre candidatas processadas e contatos finais.</p></div><div className="heading-buttons"><button className="button secondary" onClick={onRefresh}>↻ Atualizar</button><button className="button primary" onClick={() => navigate('new-search')}>＋ Nova busca</button></div></section>
       <section className="panel table-panel">
         <div className="toolbar"><div className="segmented"><button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>Todas <b>{searches.length}</b></button><button className={filter === 'processing' ? 'active' : ''} onClick={() => setFilter('processing')}>Em andamento <b>{searches.filter((s) => isActive(s.status)).length}</b></button><button className={filter === 'completed' ? 'active' : ''} onClick={() => setFilter('completed')}>Concluídas</button><button className={filter === 'exhausted' ? 'active' : ''} onClick={() => setFilter('exhausted')}>Esgotadas</button></div></div>
-        {loading ? <LoadingRows /> : shown.length ? <div className="search-table-wrap"><table className="data-table search-table"><thead><tr><th>Recorte</th><th>Progresso da meta</th><th>Candidatas</th><th>Processadas</th><th>Aproveitamento</th><th>Status</th><th /></tr></thead><tbody>{shown.map((search) => <tr key={search.id} onClick={() => navigate('review', search.id)}><td><div className="company-cell"><span>{search.uf}</span><div><strong>{search.city || `Todo ${search.uf}`}</strong><small>{search.cnaes.join(', ')}</small></div></div></td><td><div className="table-progress"><div><strong>{search.totalValidLeads}</strong><span> / {search.targetQuantity} leads</span><small>Faltam {search.remainingQuantity ?? Math.max(0, search.targetQuantity - search.totalValidLeads)}</small></div><ProgressBar value={search.progressPercent ?? progress(search)} /></div></td><td>{candidateCountOf(search)}</td><td>{search.totalProcessed}</td><td><strong>{formatNumber(search.yieldRate ?? yieldOf(search), 1)}%</strong></td><td><StatusBadge status={search.status} /></td><td><button className="row-action" aria-label="Abrir busca">›</button></td></tr>)}</tbody></table></div> : <EmptyState icon="⌕" title="Nenhuma busca neste estado" text="Ajuste o filtro ou crie um novo recorte." />}
+        {loading ? <LoadingRows /> : shown.length ? <div className="search-table-wrap"><table className="data-table search-table"><thead><tr><th>Recorte</th><th>Progresso da meta</th><th>Candidatas</th><th>Processadas</th><th>Aproveitamento</th><th>Status</th><th /></tr></thead><tbody>{shown.map((search) => <tr key={search.id} onClick={() => navigate('review', search.id)}><td><div className="company-cell"><span>{search.uf}</span><div><strong>{search.city || `Todo ${search.uf}`}</strong><small>{search.cnaes.join(', ')}</small></div></div></td><td><div className="table-progress"><div><strong>{search.totalValidLeads}</strong><span> / {targetLabelOf(search)} {isMaxTarget(search) ? 'possíveis' : 'leads'}</span><small>{searchProgressNote(search)}</small></div><ProgressBar value={progressValueOf(search)} /></div></td><td>{candidateCountOf(search)}</td><td>{search.totalProcessed}</td><td><strong>{formatNumber(search.yieldRate ?? yieldOf(search), 1)}%</strong></td><td><StatusBadge status={search.status} /></td><td><button className="row-action" aria-label="Abrir busca">›</button></td></tr>)}</tbody></table></div> : <EmptyState icon="⌕" title="Nenhuma busca neste estado" text="Ajuste o filtro ou crie um novo recorte." />}
       </section>
     </>
   );
@@ -376,7 +391,7 @@ function ReviewPage({ searchId, navigate, onSearchUpdate }: {
 
   if (loading && !search) return <PageLoader label="Carregando busca e resultados…" />;
   if (!search) return <Notice tone="error">{error || 'Busca não encontrada.'}</Notice>;
-  const remaining = search.remainingQuantity ?? Math.max(0, search.targetQuantity - search.totalValidLeads);
+  const remaining = remainingQuantityOf(search);
 
   return (
     <>
@@ -386,10 +401,10 @@ function ReviewPage({ searchId, navigate, onSearchUpdate }: {
       </section>
       {error && <Notice tone="error" onClose={() => setError(undefined)}>{error}</Notice>}
       <section className="progress-hero panel">
-        <div className="goal-progress"><div className="goal-number"><strong>{search.totalValidLeads}</strong><span>de {search.targetQuantity}</span></div><div><h2>contatos válidos encontrados</h2><p>{remaining ? `Faltam ${remaining} para atingir a meta` : 'Meta atingida — a busca foi concluída'}</p><ProgressBar value={search.progressPercent ?? progress(search)} /></div></div>
+        <div className="goal-progress"><div className="goal-number"><strong>{search.totalValidLeads}</strong><span>de {targetLabelOf(search)}</span></div><div><h2>contatos válidos encontrados</h2><p>{reviewProgressCopy(search, remaining)}</p><ProgressBar value={progressValueOf(search)} /></div></div>
         <div className="progress-metrics"><MiniMetric label="Candidatas encontradas" value={candidateCountOf(search)} /><MiniMetric label="Empresas processadas" value={search.totalProcessed} /><MiniMetric label="Leads válidos" value={search.totalValidLeads} accent /><MiniMetric label="Aproveitamento" value={`${formatNumber(search.yieldRate ?? yieldOf(search), 1)}%`} /></div>
         {isActive(search.status) && <div className="live-line"><span className="pulse" /> Enriquecimento em andamento. Resultados parciais são salvos automaticamente.</div>}
-        {statusKey(search.status) === 'exhausted' && <div className="live-line warning"><span>!</span> Candidatas esgotadas antes da meta. Os {search.totalValidLeads} leads válidos continuam disponíveis.</div>}
+        {poolExhausted(search) && <div className="live-line warning"><span>!</span> {poolExhaustionMessage(search, remaining)}</div>}
       </section>
 
       <section className="panel table-panel">
@@ -467,7 +482,8 @@ function MiniMetric({ label, value, accent = false }: { label: string; value: st
 function PanelHeader({ eyebrow, title, action }: { eyebrow: string; title: string; action?: ReactNode }) { return <div className="panel-header"><div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2></div>{action}</div>; }
 function SectionTitle({ number, title, text }: { number: string; title: string; text: string }) { return <div className="section-title"><span>{number}</span><div><h2>{title}</h2><p>{text}</p></div></div>; }
 function CheckCard({ checked, onChange, icon, title, text }: { checked: boolean; onChange: (value: boolean) => void; icon: string; title: string; text: string }) { return <label className={checked ? 'check-card active' : 'check-card'}><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><span className="check-icon">{icon}</span><span><strong>{title}</strong><small>{text}</small></span><i /></label>; }
-function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (value: boolean) => void; label: string }) { return <label className="toggle-row"><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i /><span>{label}</span></label>; }
+function Toggle({ checked, onChange, label, info, infoPlacement = 'left' }: { checked: boolean; onChange: (value: boolean) => void; label: string; info?: string; infoPlacement?: 'left' | 'right' }) { return <label className="toggle-row"><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i /><span>{label}</span>{info && <InfoHint text={info} placement={infoPlacement} />}</label>; }
+function InfoHint({ text, placement = 'left' }: { text: string; placement?: 'left' | 'right' }) { return <span className={`info-hint ${placement}`} tabIndex={0} aria-label={text} data-tooltip={text} onClick={(event) => event.preventDefault()}>i</span>; }
 function Criteria({ active, text }: { active: boolean; text: string }) { return <div className={active ? 'criteria active' : 'criteria'}><span>{active ? '✓' : '—'}</span>{text}</div>; }
 function ProgressBar({ value }: { value: number }) { return <span className="progress-bar"><i style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></span>; }
 function StatusBadge({ status }: { status: string }) { const key = statusKey(status); const labels: Record<string, string> = { queued: 'Na fila', pending: 'Na fila', processing: 'Em andamento', running: 'Em andamento', completed: 'Concluída', exhausted: 'Candidatas esgotadas', failed: 'Falhou', cancelled: 'Cancelada' }; return <span className={`status-badge ${key}`}><i />{labels[key] || status}</span>; }
@@ -498,9 +514,41 @@ function readRoute(): RouteState {
 function routePath(route: RouteState): string { if (route.view === 'new-search') return '/searches/new'; if (route.view === 'searches') return '/searches'; if (route.view === 'review' && route.searchId) return `/searches/${route.searchId}`; if (route.view === 'detail' && route.searchId && route.resultId) return `/searches/${route.searchId}/results/${route.resultId}`; if (route.view === 'exports') return `/exports${route.searchId ? `?search=${encodeURIComponent(route.searchId)}` : ''}`; return '/app'; }
 function pageTitle(view: View): string { return NAV_ITEMS.find((item) => item.view === view)?.label || 'Dashboard'; }
 function parseCnaes(value: string): string[] { return [...new Set(value.split(/[\s,;]+/).map((item) => item.replace(/\D/g, '')).filter((item) => item.length === 7))]; }
+function emailCriteriaText(emailType: EmailTypeFilter): string { if (emailType === 'corporate') return 'E-mail corporativo'; if (emailType === 'non_corporate') return 'E-mail não corporativo'; return 'E-mail obrigatório'; }
+function scoreQualityHint(score: number): { label: string; text: string; tone: string; coverage: number } {
+  if (score >= 85) return { label: 'Corte muito seletivo', text: `Só entram leads com ${score}+; reduz volume e aumenta a chance de contato completo e match forte.`, tone: 'high', coverage: 96 };
+  if (score >= 70) return { label: 'Corte equilibrado', text: `Leads abaixo de ${score} ficam fora da meta e da exportação; bom equilíbrio entre precisão e volume.`, tone: 'good', coverage: 78 };
+  if (score >= 50) return { label: 'Corte flexível', text: `Mais leads passam, mas alguns podem ter menos sinais de match, contato ou evidência.`, tone: 'medium', coverage: 56 };
+  return { label: 'Corte amplo', text: `Quase tudo que tiver contato válido pode entrar; aumenta volume e exige mais revisão manual.`, tone: 'low', coverage: 34 };
+}
 function statusKey(status: string): string { return String(status || '').toLowerCase(); }
 function isActive(status: string): boolean { return ['pending', 'queued', 'running', 'processing', 'selecting_candidates', 'enriching'].includes(statusKey(status)); }
-function progress(search: LeadSearch): number { return search.targetQuantity ? Math.min(100, search.totalValidLeads / search.targetQuantity * 100) : 0; }
+function isMaxTarget(search: LeadSearch): boolean { return search.targetMode === 'max'; }
+function poolExhausted(search: LeadSearch): boolean { return search.completionReason === 'candidate_pool_exhausted' || statusKey(search.status) === 'exhausted'; }
+function targetLabelOf(search: LeadSearch): string { return isMaxTarget(search) ? 'max' : formatNumber(search.targetQuantity); }
+function remainingQuantityOf(search: LeadSearch): number { return isMaxTarget(search) ? 0 : search.remainingQuantity ?? Math.max(0, search.targetQuantity - search.totalValidLeads); }
+function progress(search: LeadSearch): number {
+  if (isMaxTarget(search)) {
+    return search.totalCandidatesFound ? Math.min(100, search.totalProcessed / search.totalCandidatesFound * 100) : poolExhausted(search) ? 100 : 0;
+  }
+  return search.targetQuantity ? Math.min(100, search.totalValidLeads / search.targetQuantity * 100) : 0;
+}
+function progressValueOf(search: LeadSearch): number { return search.progressPercent ?? progress(search); }
+function searchProgressNote(search: LeadSearch): string {
+  if (isMaxTarget(search)) return poolExhausted(search) ? 'Todo o recorte foi processado' : `${formatNumber(search.totalProcessed)} candidatas processadas`;
+  const remaining = remainingQuantityOf(search);
+  if (poolExhausted(search) && remaining > 0) return `Candidatos esgotados; faltaram ${formatNumber(remaining)}`;
+  return remaining ? `Faltam ${formatNumber(remaining)}` : 'Meta atingida';
+}
+function reviewProgressCopy(search: LeadSearch, remaining: number): string {
+  if (isMaxTarget(search)) return poolExhausted(search) ? 'Máximo possível encontrado para este recorte.' : `A busca vai processar todas as candidatas ${search.city ? 'da cidade' : 'do estado'}.`;
+  if (poolExhausted(search) && remaining > 0) return `Busca concluída com candidatos esgotados; faltaram ${formatNumber(remaining)} para a meta.`;
+  return remaining ? `Faltam ${formatNumber(remaining)} para atingir a meta` : 'Meta atingida — a busca foi concluída';
+}
+function poolExhaustionMessage(search: LeadSearch, remaining: number): string {
+  if (isMaxTarget(search)) return `Busca concluída: todos os candidatos do recorte foram processados e ${formatNumber(search.totalValidLeads)} leads válidos ficaram disponíveis.`;
+  return `Busca concluída, mas não retornou a quantidade pedida porque os candidatos acabaram. Foram encontrados ${formatNumber(search.totalValidLeads)} leads válidos e faltaram ${formatNumber(remaining)}.`;
+}
 function yieldOf(search: LeadSearch): number { return search.totalProcessed ? search.totalValidLeads / search.totalProcessed * 100 : 0; }
 function candidateCountOf(search: LeadSearch): string { return search.candidateCountStatus === 'lower_bound' ? search.totalCandidatesFound ? `≥ ${formatNumber(search.totalCandidatesFound)}` : 'Carregando…' : formatNumber(search.totalCandidatesFound); }
 function leadOf(result: LeadSearchResult): LeadCrossMatchSnapshot | undefined { return result.lead || result.leadCrossMatch; }

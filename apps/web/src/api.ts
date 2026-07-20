@@ -64,6 +64,21 @@ function asBoolean(value: unknown, fallback = false): boolean {
   return fallback;
 }
 
+function asEmailType(value: unknown, onlyCorporateEmail: boolean): LeadSearch['emailType'] {
+  if (value === 'corporate' || value === 'non_corporate' || value === 'any') return value;
+  return onlyCorporateEmail ? 'corporate' : 'any';
+}
+
+function asTargetMode(value: unknown, targetQuantity: number): LeadSearch['targetMode'] {
+  if (value === 'max' || value === 'fixed') return value;
+  return targetQuantity > 0 ? 'fixed' : 'max';
+}
+
+function asCompletionReason(value: unknown, status: unknown): LeadSearch['completionReason'] {
+  if (value === 'target_reached' || value === 'candidate_pool_exhausted') return value;
+  return String(status ?? '').toLowerCase() === 'exhausted' ? 'candidate_pool_exhausted' : undefined;
+}
+
 function asStringArray(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(String).filter(Boolean);
   if (typeof value !== 'string') return [];
@@ -81,8 +96,17 @@ function normalizeSearch(value: unknown): LeadSearch {
   const targetQuantity = asNumber(data.targetQuantity);
   const totalProcessed = asNumber(data.totalProcessed);
   const totalValidLeads = asNumber(data.totalValidLeads);
+  const totalCandidatesFound = asNumber(data.totalCandidatesFound);
   const calculatedYield = totalProcessed > 0 ? (totalValidLeads / totalProcessed) * 100 : 0;
-  const calculatedProgress = targetQuantity > 0 ? (totalValidLeads / targetQuantity) * 100 : 0;
+  const targetMode = asTargetMode(data.targetMode, targetQuantity);
+  const calculatedCandidateProgress = totalCandidatesFound > 0 ? Math.min((totalProcessed / totalCandidatesFound) * 100, 100) : 0;
+  const calculatedProgress = targetMode === 'max'
+    ? calculatedCandidateProgress
+    : targetQuantity > 0 ? (totalValidLeads / targetQuantity) * 100 : 0;
+
+  const onlyCorporateEmail = asBoolean(data.onlyCorporateEmail);
+  const emailType = asEmailType(data.emailType, onlyCorporateEmail);
+  const status = String(data.status ?? 'PENDING');
 
   return {
     id: String(data.id ?? ''),
@@ -90,25 +114,31 @@ function normalizeSearch(value: unknown): LeadSearch {
     city: data.city ? String(data.city) : undefined,
     cnaes: asStringArray(data.cnaes),
     targetQuantity,
+    targetMode,
     minScore: data.minScore === null || data.minScore === undefined ? undefined : asNumber(data.minScore),
     requirePhone: asBoolean(data.requirePhone),
     requireEmail: asBoolean(data.requireEmail),
     requireDecisionMakerMatch: asBoolean(data.requireDecisionMakerMatch),
     onlyMobilePhone: asBoolean(data.onlyMobilePhone),
-    onlyCorporateEmail: asBoolean(data.onlyCorporateEmail),
+    emailType,
+    onlyCorporateEmail: emailType === 'corporate',
     excludeGenericContacts: asBoolean(data.excludeGenericContacts),
-    status: String(data.status ?? 'PENDING'),
-    totalCandidatesFound: asNumber(data.totalCandidatesFound),
+    status,
+    completionReason: asCompletionReason(data.completionReason, status),
+    totalCandidatesFound,
     candidateCountStatus: data.candidateCountStatus === 'lower_bound' ? 'lower_bound' : 'exact',
     totalProcessed,
     totalValidLeads,
     remainingQuantity: data.remainingQuantity === undefined
-      ? Math.max(targetQuantity - totalValidLeads, 0)
+      ? targetMode === 'max' ? 0 : Math.max(targetQuantity - totalValidLeads, 0)
       : asNumber(data.remainingQuantity),
     yieldRate: data.yieldRate === undefined ? calculatedYield : asNumber(data.yieldRate),
     progressPercent: data.progressPercent === undefined
       ? Math.min(calculatedProgress, 100)
       : asNumber(data.progressPercent),
+    candidateProgressPercent: data.candidateProgressPercent === undefined
+      ? calculatedCandidateProgress
+      : asNumber(data.candidateProgressPercent),
     currentStage: data.currentStage ? String(data.currentStage) : undefined,
     errorMessage: data.errorMessage
       ? String(data.errorMessage)

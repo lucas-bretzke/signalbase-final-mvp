@@ -16,22 +16,31 @@ export type LeadResultStatus =
   | 'FAILED'
   | string;
 
+export type EmailTypeFilter = 'any' | 'corporate' | 'non_corporate';
+export type LeadSearchTargetMode = 'fixed' | 'max';
+export type LeadSearchCompletionReason = 'target_reached' | 'candidate_pool_exhausted';
+
 export interface CreateLeadSearchInput {
   uf: string;
   city?: string;
   cnaes: string[];
-  targetQuantity: number;
+  targetQuantity: number | 'max';
+  targetMode?: LeadSearchTargetMode;
   minScore?: number;
   requirePhone: boolean;
   requireEmail: boolean;
   requireDecisionMakerMatch: boolean;
   onlyMobilePhone: boolean;
+  emailType: EmailTypeFilter;
   onlyCorporateEmail: boolean;
   excludeGenericContacts: boolean;
 }
 
-export interface LeadSearch extends CreateLeadSearchInput {
+export interface LeadSearch extends Omit<CreateLeadSearchInput, 'targetQuantity' | 'targetMode'> {
   id: string;
+  targetQuantity: number;
+  targetMode: LeadSearchTargetMode;
+  completionReason?: LeadSearchCompletionReason;
   status: LeadSearchStatus;
   totalCandidatesFound: number;
   candidateCountStatus?: 'exact' | 'lower_bound';
@@ -40,6 +49,7 @@ export interface LeadSearch extends CreateLeadSearchInput {
   remainingQuantity?: number;
   yieldRate?: number;
   progressPercent?: number;
+  candidateProgressPercent?: number;
   currentStage?: string;
   errorMessage?: string;
   createdAt: string;

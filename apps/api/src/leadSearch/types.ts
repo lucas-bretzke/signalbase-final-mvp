@@ -3,17 +3,22 @@ import { DecisionMaker, EnrichedLead } from '../types.js';
 export type LeadSearchStatus = 'queued' | 'processing' | 'completed' | 'exhausted' | 'failed';
 export type LeadSearchResultStatus = 'valid' | 'rejected' | 'error';
 export type CandidateCountStatus = 'exact' | 'lower_bound';
+export type EmailTypeFilter = 'any' | 'corporate' | 'non_corporate';
+export type LeadSearchTargetMode = 'fixed' | 'max';
+export type LeadSearchCompletionReason = 'target_reached' | 'candidate_pool_exhausted';
 
 export interface LeadSearchFilters {
   uf: string;
   city?: string;
   cnaes: string[];
   targetQuantity: number;
+  targetMode: LeadSearchTargetMode;
   minScore: number;
   requirePhone: boolean;
   requireEmail: boolean;
   requireDecisionMakerMatch: boolean;
   onlyMobilePhone: boolean;
+  emailType: EmailTypeFilter;
   onlyCorporateEmail: boolean;
   excludeGenericContacts: boolean;
 }
@@ -29,6 +34,7 @@ export interface LeadSearch extends LeadSearchFilters {
   updatedAt: string;
   startedAt?: string;
   completedAt?: string;
+  completionReason?: LeadSearchCompletionReason;
   lastError?: string;
 }
 
@@ -146,7 +152,7 @@ export interface CandidateQuery {
   offset: number;
   limit: number;
   preferences?: Pick<LeadSearchFilters,
-    'requirePhone' | 'requireEmail' | 'onlyMobilePhone' | 'onlyCorporateEmail' | 'excludeGenericContacts'>;
+    'requirePhone' | 'requireEmail' | 'onlyMobilePhone' | 'emailType' | 'onlyCorporateEmail' | 'excludeGenericContacts'>;
 }
 
 export interface ReceitaCompanySource {

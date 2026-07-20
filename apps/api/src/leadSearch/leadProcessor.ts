@@ -175,7 +175,7 @@ function chooseEmail(
     ...(decisionMaker?.emails ?? []).map((value) => ({ value, source: 'decision_maker' as const })),
     ...splitContactValues(lead.companyEmail ?? candidate.email).map((value) => ({ value, source: 'receita' as const })),
   ].filter((contact) => isValidEmail(contact.value));
-  const eligible = contacts.filter((contact) => (!search.onlyCorporateEmail || isCorporateEmail(contact.value))
+  const eligible = contacts.filter((contact) => matchesEmailType(contact.value, emailTypeOf(search))
     && (!search.excludeGenericContacts || !isGenericEmail(contact.value)));
   return eligible.sort((left, right) => emailPriority(right) - emailPriority(left))[0];
 }
@@ -207,9 +207,21 @@ function validationFailures(
   if (search.onlyMobilePhone && (!phone || !isMobilePhone(phone.value))) failures.push('Celular valido obrigatorio nao encontrado.');
   if (search.requireEmail && !email) failures.push('E-mail valido obrigatorio nao encontrado.');
   if (search.onlyCorporateEmail && (!email || !isCorporateEmail(email.value))) failures.push('E-mail corporativo valido obrigatorio nao encontrado.');
+  if (emailTypeOf(search) === 'non_corporate' && (!email || isCorporateEmail(email.value))) failures.push('E-mail nao corporativo valido obrigatorio nao encontrado.');
   if (search.excludeGenericContacts && email && isGenericEmail(email.value)) failures.push('O e-mail final e generico.');
   if (search.requireDecisionMakerMatch && !match.matched) failures.push('Correspondencia entre socio e decisor obrigatoria nao encontrada.');
   return failures;
+}
+
+function emailTypeOf(search: LeadSearch): LeadSearch['emailType'] {
+  if (search.emailType && !(search.emailType === 'any' && search.onlyCorporateEmail)) return search.emailType;
+  return search.onlyCorporateEmail ? 'corporate' : 'any';
+}
+
+function matchesEmailType(value: string, emailType: LeadSearch['emailType']): boolean {
+  if (emailType === 'corporate') return isCorporateEmail(value);
+  if (emailType === 'non_corporate') return !isCorporateEmail(value);
+  return true;
 }
 
 function rejectedWithoutMatch(search: LeadSearch, candidate: ReceitaCompany, reason: string): LeadProcessingOutcome {
