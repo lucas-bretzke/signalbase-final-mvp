@@ -1,4 +1,4 @@
-import { DecisionMaker, EnrichedLead } from '../types.js';
+import { DecisionMaker, EnrichedLead, LeadQualityLevel } from '../types.js';
 
 export type LeadSearchStatus = 'queued' | 'processing' | 'completed' | 'exhausted' | 'failed';
 export type LeadSearchResultStatus = 'valid' | 'rejected' | 'error';
@@ -6,6 +6,9 @@ export type CandidateCountStatus = 'exact' | 'lower_bound';
 export type EmailTypeFilter = 'any' | 'corporate' | 'non_corporate';
 export type LeadSearchTargetMode = 'fixed' | 'max';
 export type LeadSearchCompletionReason = 'target_reached' | 'candidate_pool_exhausted';
+export type MatchConfidenceLevel = 'normal' | 'alta' | 'muito_alta';
+export type LinkedinEvidenceLevel = 'none' | 'demo' | 'url_only' | 'company_data' | 'real_company_data';
+export type ContactEvidenceLevel = 'none' | 'demo' | 'company_contact' | 'decision_maker_contact' | 'named_decision_maker_contact';
 
 export interface LeadSearchFilters {
   uf: string;
@@ -14,6 +17,7 @@ export interface LeadSearchFilters {
   targetQuantity: number;
   targetMode: LeadSearchTargetMode;
   minScore: number;
+  minQuality?: LeadQualityLevel;
   requirePhone: boolean;
   requireEmail: boolean;
   requireDecisionMakerMatch: boolean;
@@ -21,6 +25,14 @@ export interface LeadSearchFilters {
   emailType: EmailTypeFilter;
   onlyCorporateEmail: boolean;
   excludeGenericContacts: boolean;
+  requireRealLinkedin?: boolean;
+  requireLinkedinCompanyData?: boolean;
+  requireRealDecisionMaker?: boolean;
+  requireDecisionMakerProfile?: boolean;
+  requireDecisionMakerContact?: boolean;
+  requireNamedEmail?: boolean;
+  requireDecisionMakerPhone?: boolean;
+  matchConfidenceLevel?: MatchConfidenceLevel;
 }
 
 export interface LeadSearch extends LeadSearchFilters {
@@ -94,6 +106,10 @@ export interface LeadCrossMatch {
   phoneMobile: boolean;
   emailSource?: 'decision_maker' | 'receita';
   phoneSource?: 'decision_maker' | 'receita';
+  linkedinEvidenceLevel: LinkedinEvidenceLevel;
+  contactEvidenceLevel: ContactEvidenceLevel;
+  isDemoEvidence: boolean;
+  emailNameMatched: boolean;
   finalScore: number;
   evidence: string[];
   warnings: string[];

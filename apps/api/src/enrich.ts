@@ -137,6 +137,19 @@ async function enrichOne(
   const classification = classifyLead(baseLead);
   const lead: EnrichedLead = { ...baseLead, ...classification };
 
+  if (!includeBelowQuality && env.workerMode !== 'demo' && hasDemoEvidence(resolved.provider, companyProfile.method_used, decisionMakers)) {
+    return {
+      foundLinkedin: Boolean(resolved.linkedinUrl),
+      filteredOut: false,
+      notFound: false,
+      rejected: {
+        cnpj: lead.cnpj,
+        companyName: lead.companyName,
+        reason: 'Evidencia demonstrativa nao e aceita quando o worker esta em modo real.',
+      },
+    };
+  }
+
   if (includeBelowQuality || passesQualityFilter(lead.quality, request.quality)) {
     return { lead, foundLinkedin: true, filteredOut: false, notFound: false };
   }
@@ -192,12 +205,17 @@ function buildLeadBase(params: {
     companyName,
     tradingName: input.nomeFantasia,
     linkedinUrl: resolved.linkedinUrl,
+    linkedinProvider: resolved.provider,
+    linkedinConfidence: resolved.confidence,
+    linkedinReason: resolved.reason,
     website: nonEmpty(companyProfile.website, input.site),
     industry: companyProfile.industry,
     companySize: companyProfile.company_size,
     employeesMin: companyProfile.employees_min,
     employeesMax: companyProfile.employees_max,
     headquarters: companyProfile.headquarters,
+    companyExtractionSuccess: companyProfile.success,
+    companyExtractionMethod: companyProfile.method_used,
     city: input.cidade,
     state: input.uf,
     founded: companyProfile.founded,
@@ -219,6 +237,14 @@ function buildLeadBase(params: {
       ...safeArray(decisionResponse.warnings),
     ],
   };
+}
+
+function hasDemoEvidence(provider: string | undefined, method: string | undefined, decisionMakers: DecisionMaker[]): boolean {
+  return isDemoValue(provider) || isDemoValue(method) || decisionMakers.some((person) => isDemoValue(person.source) || isDemoValue(person.linkedin_url));
+}
+
+function isDemoValue(value: string | undefined): boolean {
+  return /\bdemo\b/i.test(String(value ?? ''));
 }
 
 function normalizeDecisionMakers(decisionMakers: DecisionMaker[] | undefined): DecisionMaker[] {

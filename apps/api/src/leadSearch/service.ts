@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { normalizeCnpj } from '../utils.js';
-import { normalizeLeadSearchFilters } from './leadSearchFilters.js';
+import { minQualityFromScore, normalizeLeadSearchFilters } from './leadSearchFilters.js';
 import { stableEntityId } from './leadProcessor.js';
 import {
   LeadProcessingOutcome,
@@ -338,6 +338,7 @@ export function withProgress(search: LeadSearch): LeadSearchProgress {
   const remainingQuantity = fixedTarget ? Math.max(0, search.targetQuantity - search.totalValidLeads) : 0;
   return {
     ...search,
+    minQuality: search.minQuality ?? minQualityFromScore(search.minScore ?? 0),
     targetMode,
     completionReason,
     remainingQuantity,

@@ -69,6 +69,20 @@ function asEmailType(value: unknown, onlyCorporateEmail: boolean): LeadSearch['e
   return onlyCorporateEmail ? 'corporate' : 'any';
 }
 
+function asMinQuality(value: unknown, minScore: number | undefined): LeadSearch['minQuality'] {
+  if (value === 'baixo' || value === 'medio' || value === 'alto' || value === 'muito_alto') return value;
+  const score = minScore ?? 0;
+  if (score >= 85) return 'muito_alto';
+  if (score >= 70) return 'alto';
+  if (score >= 50) return 'medio';
+  return 'baixo';
+}
+
+function asMatchConfidenceLevel(value: unknown): LeadSearch['matchConfidenceLevel'] {
+  if (value === 'alta' || value === 'muito_alta' || value === 'normal') return value;
+  return 'normal';
+}
+
 function asTargetMode(value: unknown, targetQuantity: number): LeadSearch['targetMode'] {
   if (value === 'max' || value === 'fixed') return value;
   return targetQuantity > 0 ? 'fixed' : 'max';
@@ -107,6 +121,7 @@ function normalizeSearch(value: unknown): LeadSearch {
   const onlyCorporateEmail = asBoolean(data.onlyCorporateEmail);
   const emailType = asEmailType(data.emailType, onlyCorporateEmail);
   const status = String(data.status ?? 'PENDING');
+  const minScore = data.minScore === null || data.minScore === undefined ? undefined : asNumber(data.minScore);
 
   return {
     id: String(data.id ?? ''),
@@ -115,7 +130,8 @@ function normalizeSearch(value: unknown): LeadSearch {
     cnaes: asStringArray(data.cnaes),
     targetQuantity,
     targetMode,
-    minScore: data.minScore === null || data.minScore === undefined ? undefined : asNumber(data.minScore),
+    minScore,
+    minQuality: asMinQuality(data.minQuality, minScore),
     requirePhone: asBoolean(data.requirePhone),
     requireEmail: asBoolean(data.requireEmail),
     requireDecisionMakerMatch: asBoolean(data.requireDecisionMakerMatch),
@@ -123,6 +139,14 @@ function normalizeSearch(value: unknown): LeadSearch {
     emailType,
     onlyCorporateEmail: emailType === 'corporate',
     excludeGenericContacts: asBoolean(data.excludeGenericContacts),
+    requireRealLinkedin: asBoolean(data.requireRealLinkedin),
+    requireLinkedinCompanyData: asBoolean(data.requireLinkedinCompanyData),
+    requireRealDecisionMaker: asBoolean(data.requireRealDecisionMaker),
+    requireDecisionMakerProfile: asBoolean(data.requireDecisionMakerProfile),
+    requireDecisionMakerContact: asBoolean(data.requireDecisionMakerContact),
+    requireNamedEmail: asBoolean(data.requireNamedEmail),
+    requireDecisionMakerPhone: asBoolean(data.requireDecisionMakerPhone),
+    matchConfidenceLevel: asMatchConfidenceLevel(data.matchConfidenceLevel),
     status,
     completionReason: asCompletionReason(data.completionReason, status),
     totalCandidatesFound,

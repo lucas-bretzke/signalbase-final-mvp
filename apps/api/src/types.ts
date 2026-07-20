@@ -1,4 +1,5 @@
 export type QualityFilter = 'baixa' | 'normal' | 'alta' | 'muito_alta';
+export type LeadQualityLevel = 'baixo' | 'medio' | 'alto' | 'muito_alto';
 
 export interface CompanyInput {
   cnpj: string;
@@ -60,12 +61,17 @@ export interface EnrichedLead {
   companyName: string;
   tradingName?: string;
   linkedinUrl: string;
+  linkedinProvider?: string;
+  linkedinConfidence?: number;
+  linkedinReason?: string;
   website?: string;
   industry?: string;
   companySize?: string;
   employeesMin?: number;
   employeesMax?: number;
   headquarters?: string;
+  companyExtractionSuccess?: boolean;
+  companyExtractionMethod?: string;
   city?: string;
   state?: string;
   founded?: string;

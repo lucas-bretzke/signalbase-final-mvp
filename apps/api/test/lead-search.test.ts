@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildServer } from '../src/server.js';
+import { env } from '../src/env.js';
 import { leadSearchCreateSchema } from '../src/validation.js';
 import { evaluateEnrichedLead } from '../src/leadSearch/leadProcessor.js';
 import { JsonLeadSearchRepository } from '../src/leadSearch/jsonRepository.js';
@@ -21,8 +22,10 @@ import {
 import { EnrichedLead } from '../src/types.js';
 
 const temporaryDirectories: string[] = [];
+const originalWorkerMode = env.workerMode;
 
 afterEach(async () => {
+  env.workerMode = originalWorkerMode;
   await Promise.all(temporaryDirectories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })));
 });
 
@@ -64,6 +67,25 @@ describe('lead search validation', () => {
       emailType: 'non_corporate',
       onlyCorporateEmail: false,
     });
+  });
+
+  it('maps legacy minScore to minQuality and lets minQuality take precedence', () => {
+    const legacy = leadSearchCreateSchema.parse({
+      uf: 'SC',
+      cnaes: ['7311400'],
+      targetQuantity: 10,
+      minScore: 75,
+    });
+    const explicit = leadSearchCreateSchema.parse({
+      uf: 'SC',
+      cnaes: ['7311400'],
+      targetQuantity: 10,
+      minScore: 95,
+      minQuality: 'medio',
+    });
+
+    expect(legacy).toMatchObject({ minQuality: 'alto', minScore: 75 });
+    expect(explicit).toMatchObject({ minQuality: 'medio', minScore: 50 });
   });
 
   it('accepts max target for city and state searches, but not without a UF', () => {
@@ -161,6 +183,135 @@ describe('final lead qualification', () => {
     const rejected = evaluateEnrichedLead(search, candidate, enrichedLead());
     expect(rejected.result.status).toBe('rejected');
     expect(rejected.result.rejectionReasons).toContain('E-mail nao corporativo valido obrigatorio nao encontrado.');
+  });
+
+  it('rejects demo evidence when the worker is in real mode', () => {
+    env.workerMode = 'real';
+    const accepted = evaluateEnrichedLead(searchModel({ minScore: 0, minQuality: 'baixo' }), company(1), enrichedLead(), '2026-07-17T12:00:00.000Z');
+
+    expect(accepted.result.status).toBe('rejected');
+    expect(accepted.result.rejectionReasons).toContain('Evidencia demonstrativa nao e aceita no modo real.');
+    expect(accepted.crossMatch).toMatchObject({
+      isDemoEvidence: true,
+      decisionMakerMatched: false,
+    });
+  });
+
+  it('does not treat a LinkedIn URL without real extracted data as high quality', () => {
+    env.workerMode = 'real';
+    const lead = {
+      ...enrichedLead(),
+      linkedinProvider: 'input',
+      companyExtractionSuccess: false,
+      companyExtractionMethod: 'worker_error',
+      industry: undefined,
+      companySize: undefined,
+      employeesMin: undefined,
+      employeesMax: undefined,
+      headquarters: undefined,
+      followers: undefined,
+      description: undefined,
+      bestDecisionMaker: undefined,
+      decisionMakers: [],
+      score: 60,
+      quality: 'normal' as const,
+    };
+    const outcome = evaluateEnrichedLead(searchModel({ minQuality: 'alto', minScore: 70 }), company(1), lead, '2026-07-17T12:00:00.000Z');
+
+    expect(outcome.result.status).toBe('rejected');
+    expect(outcome.result.rejectionReasons.some((reason) => reason.includes('Qualidade'))).toBe(true);
+    expect(outcome.crossMatch?.linkedinEvidenceLevel).toBe('url_only');
+  });
+
+  it('raises confidence for an email containing the partner name without allowing score 100 by itself', () => {
+    env.workerMode = 'real';
+    const realPerson = {
+      name: 'Ana Silva', title: 'Socia e CEO', linkedin_url: 'https://linkedin.com/in/ana-silva',
+      emails: ['ana.silva@gmail.com'], phones: [], confidence: 96, source: 'staffspy',
+      partner_match: true, matched_partner_name: 'Ana Silva', partner_match_confidence: 95,
+    };
+    const lead = {
+      ...enrichedLead(),
+      linkedinProvider: 'input',
+      companyExtractionSuccess: false,
+      companyExtractionMethod: 'worker_error',
+      bestDecisionMaker: realPerson,
+      decisionMakers: [realPerson],
+      companyEmail: undefined,
+      companyPhone: undefined,
+      score: 92,
+      quality: 'muito_alta' as const,
+    };
+    const outcome = evaluateEnrichedLead(searchModel({ minQuality: 'alto', minScore: 70, requireEmail: true }), company(1), lead, '2026-07-17T12:00:00.000Z');
+
+    expect(outcome.result.status).toBe('valid');
+    expect(outcome.crossMatch?.emailNameMatched).toBe(true);
+    expect(outcome.result.finalScore).toBeLessThan(100);
+    expect(outcome.result.finalScore).toBeGreaterThanOrEqual(90);
+  });
+
+  it('requires at least one technically valid contact even at low quality', () => {
+    env.workerMode = 'real';
+    const candidate = { ...company(1), email: undefined, phone: undefined };
+    const lead = {
+      ...enrichedLead(),
+      linkedinProvider: 'input',
+      companyEmail: undefined,
+      companyPhone: undefined,
+      bestDecisionMaker: undefined,
+      decisionMakers: [],
+      score: 40,
+      quality: 'normal' as const,
+    };
+    const outcome = evaluateEnrichedLead(searchModel({ minQuality: 'baixo', minScore: 0 }), candidate, lead, '2026-07-17T12:00:00.000Z');
+
+    expect(outcome.result.status).toBe('rejected');
+    expect(outcome.result.rejectionReasons).toContain('Contato tecnico valido obrigatorio nao encontrado.');
+  });
+
+  it('applies automatic high-quality rules without exposing technical toggles', () => {
+    env.workerMode = 'real';
+    const lead = {
+      ...enrichedLead(),
+      linkedinProvider: 'input',
+      companyExtractionSuccess: true,
+      companyExtractionMethod: 'linkedin_worker',
+      industry: 'Publicidade',
+      description: 'Agencia de marketing.',
+      bestDecisionMaker: undefined,
+      decisionMakers: [],
+      companyEmail: 'contato@acme.com.br',
+      score: 82,
+      quality: 'alta' as const,
+    };
+    const outcome = evaluateEnrichedLead(searchModel({ minQuality: 'alto', minScore: 70, requireEmail: true }), company(1), lead, '2026-07-17T12:00:00.000Z');
+
+    expect(outcome.result.status).toBe('rejected');
+    expect(outcome.result.rejectionReasons).toContain('Qualidade alta nao aceita e-mail generico como contato final.');
+  });
+
+  it('requires extracted company data before allowing very high quality in real mode', () => {
+    env.workerMode = 'real';
+    const realPerson = {
+      name: 'Ana Silva', title: 'Socia e CEO', linkedin_url: 'https://linkedin.com/in/ana-silva',
+      emails: ['ana.silva@acme.com.br'], phones: ['+55 48 99999-0001'], confidence: 96, source: 'staffspy',
+      partner_match: true, matched_partner_name: 'Ana Silva', partner_match_confidence: 96,
+    };
+    const lead = {
+      ...enrichedLead(),
+      linkedinProvider: 'input',
+      companyExtractionSuccess: false,
+      companyExtractionMethod: 'worker_error',
+      bestDecisionMaker: realPerson,
+      decisionMakers: [realPerson],
+      companyEmail: undefined,
+      score: 95,
+      quality: 'muito_alta' as const,
+    };
+    const outcome = evaluateEnrichedLead(searchModel({ minQuality: 'muito_alto', minScore: 85, requireEmail: true }), company(1), lead, '2026-07-17T12:00:00.000Z');
+
+    expect(outcome.result.status).toBe('rejected');
+    expect(outcome.result.rejectionReasons).toContain('Dados reais da empresa no LinkedIn obrigatorios nao encontrados.');
   });
 });
 

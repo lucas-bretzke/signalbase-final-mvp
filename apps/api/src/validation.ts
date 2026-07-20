@@ -2,8 +2,10 @@ import { z } from 'zod';
 import { onlyDigits, uniq } from './utils.js';
 
 const quality = z.enum(['baixa', 'normal', 'alta', 'muito_alta']);
+const minQuality = z.enum(['baixo', 'medio', 'alto', 'muito_alto']);
 const emailType = z.enum(['any', 'corporate', 'non_corporate']);
 const targetMode = z.enum(['fixed', 'max']);
+const matchConfidenceLevel = z.enum(['normal', 'alta', 'muito_alta']);
 const targetQuantity = z.union([
   z.number().int().min(1).max(10_000),
   z.string().trim().toLowerCase().refine((value) => value === 'max', {
@@ -53,7 +55,8 @@ export const leadSearchCreateSchema = z.object({
   cnaes: z.array(cnae).min(1).max(50).transform((values) => uniq(values)),
   targetQuantity,
   targetMode: targetMode.optional(),
-  minScore: z.number().int().min(0).max(100).optional().default(0),
+  minScore: z.number().int().min(0).max(100).optional(),
+  minQuality: minQuality.optional(),
   requirePhone: z.boolean().optional().default(false),
   requireEmail: z.boolean().optional().default(false),
   requireDecisionMakerMatch: z.boolean().optional().default(false),
@@ -63,18 +66,28 @@ export const leadSearchCreateSchema = z.object({
   onlyCorporateEmail: z.boolean().optional(),
   requireCorporateEmail: z.boolean().optional(),
   excludeGenericContacts: z.boolean().optional().default(false),
+  requireRealLinkedin: z.boolean().optional().default(false),
+  requireLinkedinCompanyData: z.boolean().optional().default(false),
+  requireRealDecisionMaker: z.boolean().optional().default(false),
+  requireDecisionMakerProfile: z.boolean().optional().default(false),
+  requireDecisionMakerContact: z.boolean().optional().default(false),
+  requireNamedEmail: z.boolean().optional().default(false),
+  requireDecisionMakerPhone: z.boolean().optional().default(false),
+  matchConfidenceLevel: matchConfidenceLevel.optional().default('normal'),
 }).transform((value) => {
   const onlyMobilePhone = value.onlyMobilePhone ?? value.requireMobilePhone ?? false;
   const selectedEmailType = value.emailType ?? ((value.onlyCorporateEmail ?? value.requireCorporateEmail ?? false) ? 'corporate' : 'any');
   const onlyCorporateEmail = selectedEmailType === 'corporate';
   const selectedTargetMode = value.targetMode ?? (value.targetQuantity === 'max' ? 'max' : 'fixed');
+  const selectedMinQuality = value.minQuality ?? minQualityFromScore(value.minScore ?? 0);
   return {
     uf: value.uf,
     city: value.city,
     cnaes: value.cnaes,
     targetQuantity: selectedTargetMode === 'max' ? 0 : Number(value.targetQuantity),
     targetMode: selectedTargetMode,
-    minScore: value.minScore,
+    minScore: value.minQuality ? scoreFromMinQuality(selectedMinQuality) : value.minScore ?? scoreFromMinQuality(selectedMinQuality),
+    minQuality: selectedMinQuality,
     requirePhone: value.requirePhone || onlyMobilePhone,
     requireEmail: value.requireEmail || selectedEmailType !== 'any',
     requireDecisionMakerMatch: value.requireDecisionMakerMatch,
@@ -82,7 +95,29 @@ export const leadSearchCreateSchema = z.object({
     emailType: selectedEmailType,
     onlyCorporateEmail,
     excludeGenericContacts: value.excludeGenericContacts,
+    requireRealLinkedin: value.requireRealLinkedin,
+    requireLinkedinCompanyData: value.requireLinkedinCompanyData,
+    requireRealDecisionMaker: value.requireRealDecisionMaker,
+    requireDecisionMakerProfile: value.requireDecisionMakerProfile,
+    requireDecisionMakerContact: value.requireDecisionMakerContact,
+    requireNamedEmail: value.requireNamedEmail,
+    requireDecisionMakerPhone: value.requireDecisionMakerPhone,
+    matchConfidenceLevel: value.matchConfidenceLevel,
   };
 });
 
 export const resultSelectionSchema = z.object({ selected: z.boolean() });
+
+function minQualityFromScore(score: number): z.infer<typeof minQuality> {
+  if (score >= 85) return 'muito_alto';
+  if (score >= 70) return 'alto';
+  if (score >= 50) return 'medio';
+  return 'baixo';
+}
+
+function scoreFromMinQuality(value: z.infer<typeof minQuality>): number {
+  if (value === 'muito_alto') return 85;
+  if (value === 'alto') return 70;
+  if (value === 'medio') return 50;
+  return 0;
+}

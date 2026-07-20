@@ -10,7 +10,7 @@ describe('enrich fast path', () => {
     process.env.WORKER_CONCURRENCY = '2';
   });
 
-  it('skips worker-only data when baixa only needs a company page', async () => {
+  it('rejects demo evidence in real mode even when baixa only needs a company page', async () => {
     const { enrichBatch } = await import('../src/enrich.js');
     const result = await enrichBatch({
       quality: 'baixa',
@@ -24,10 +24,8 @@ describe('enrich fast path', () => {
       ],
     });
 
-    expect(result.returned).toBe(1);
-    expect(result.leads[0].quality).toBe('baixa');
-    expect(result.leads[0].linkedinUrl).toBe('https://www.linkedin.com/company/banco-do-brasil');
-    expect(result.leads[0].decisionMakers).toEqual([]);
-    expect(result.leads[0].evidence).not.toContain('Company info via demo');
+    expect(result.returned).toBe(0);
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0].reason).toContain('Evidencia demonstrativa');
   });
 });

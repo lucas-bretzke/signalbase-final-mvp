@@ -97,6 +97,10 @@ function registerPrefix(app: FastifyInstance, service: LeadSearchService, prefix
         telefone_final: safeCsv(lead?.finalPhone),
         email_validado: lead?.emailValidated ? 'sim' : 'nao',
         telefone_validado: lead?.phoneValidated ? 'sim' : 'nao',
+        evidencia_linkedin: lead?.linkedinEvidenceLevel ?? '',
+        evidencia_contato: lead?.contactEvidenceLevel ?? '',
+        evidencia_demo: lead?.isDemoEvidence ? 'sim' : 'nao',
+        email_com_nome: lead?.emailNameMatched ? 'sim' : 'nao',
         score_final: result.finalScore,
         evidencias: safeCsv(lead?.evidence.join(' | ')),
       };
@@ -105,7 +109,7 @@ function registerPrefix(app: FastifyInstance, service: LeadSearchService, prefix
       'cnpj', 'razao_social', 'nome_fantasia', 'cidade', 'uf', 'cnae', 'socio_receita',
       'linkedin_empresa', 'decisor', 'cargo_decisor', 'linkedin_decisor', 'match_socio_decisor',
       'confianca_match', 'email_final', 'telefone_final', 'email_validado', 'telefone_validado',
-      'score_final', 'evidencias',
+      'evidencia_linkedin', 'evidencia_contato', 'evidencia_demo', 'email_com_nome', 'score_final', 'evidencias',
     ];
     const csv = stringify(rows, { header: true, bom: true, columns });
     reply.header('content-type', 'text/csv; charset=utf-8');

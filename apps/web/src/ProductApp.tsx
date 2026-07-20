@@ -14,6 +14,7 @@ import {
   EmailTypeFilter,
   EvidenceItem,
   LeadCrossMatchSnapshot,
+  LeadQualityLevel,
   LeadSearch,
   LeadSearchResult,
 } from './types';
@@ -230,7 +231,7 @@ function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void 
   const [city, setCity] = useState('');
   const [rawCnaes, setRawCnaes] = useState('7311400, 7319002');
   const [targetQuantityInput, setTargetQuantityInput] = useState('100');
-  const [minScore, setMinScore] = useState(75);
+  const [minQuality, setMinQuality] = useState<LeadQualityLevel>('alto');
   const [requirePhone, setRequirePhone] = useState(true);
   const [requireEmail, setRequireEmail] = useState(false);
   const [requireDecisionMakerMatch, setRequireDecisionMakerMatch] = useState(true);
@@ -242,7 +243,8 @@ function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void 
   const cnaes = useMemo(() => parseCnaes(rawCnaes), [rawCnaes]);
   const invalidCnaes = useMemo(() => rawCnaes.split(/[\s,;]+/).filter(Boolean).filter((value) => value.replace(/\D/g, '').length !== 7), [rawCnaes]);
   const effectiveRequireEmail = requireEmail || emailType !== 'any';
-  const scoreHint = scoreQualityHint(minScore);
+  const qualityHint = qualityLevelHint(minQuality);
+  const qualityRules = qualityRuleLabels(minQuality);
   const citySearch = Boolean(city.trim());
   const targetIsMax = targetQuantityInput.trim().toLowerCase() === 'max';
   const parsedTargetQuantity = Number(targetQuantityInput);
@@ -256,7 +258,7 @@ function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void 
     if (!cnaes.length || invalidCnaes.length) return setError('Informe ao menos um CNAE válido com sete dígitos.');
     if (!targetIsMax && (!Number.isInteger(parsedTargetQuantity) || parsedTargetQuantity < 1)) return setError('A quantidade desejada deve ser um número maior que zero ou max.');
     const input: CreateLeadSearchInput = {
-      uf, city: city.trim() || undefined, cnaes, targetQuantity: targetIsMax ? 'max' : targetQuantity, targetMode: targetIsMax ? 'max' : 'fixed', minScore,
+      uf, city: city.trim() || undefined, cnaes, targetQuantity: targetIsMax ? 'max' : targetQuantity, targetMode: targetIsMax ? 'max' : 'fixed', minQuality,
       requirePhone, requireEmail, requireDecisionMakerMatch,
       onlyMobilePhone, emailType, onlyCorporateEmail: emailType === 'corporate', excludeGenericContacts,
     };
@@ -293,7 +295,7 @@ function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void 
             <SectionTitle number="03" title="O que conta como um lead válido?" text="A meta só avança quando todos os critérios selecionados forem atendidos." />
             <div className="field-grid two quantity-fields">
               <label className="field"><span>Quantidade desejada <b>*</b></span><div className="input-suffix"><input value={targetQuantityInput} onChange={(event) => setTargetQuantityInput(event.target.value)} placeholder="100 ou max" /><i>{targetIsMax ? 'tudo' : 'contatos'}</i></div><small>Use max para processar todas as candidatas {citySearch ? 'da cidade' : 'do estado'}; país inteiro ainda não.</small></label>
-              <label className="field"><span>Score mínimo <em>opcional</em></span><div className="score-control"><input type="range" min="0" max="100" value={minScore} onChange={(event) => setMinScore(Number(event.target.value))} /><strong>{minScore}</strong></div><small>Leads abaixo deste corte são rejeitados.</small><div className={`score-impact ${scoreHint.tone}`}><span><i style={{ width: `${scoreHint.coverage}%` }} /></span><strong>{scoreHint.label}</strong><small>{scoreHint.text}</small></div></label>
+              <label className="field"><span>Qualidade mínima <em>opcional</em></span><div className="quality-control" role="group" aria-label="Qualidade mínima">{(['baixo', 'medio', 'alto', 'muito_alto'] as LeadQualityLevel[]).map((level) => <button key={level} type="button" className={minQuality === level ? 'active' : ''} onClick={() => setMinQuality(level)}>{qualityLevelLabel(level)}</button>)}</div><small>Leads abaixo deste nível são rejeitados.</small><div className={`score-impact ${qualityHint.tone}`}><span><i style={{ width: `${qualityHint.coverage}%` }} /></span><strong>{qualityHint.label}</strong><small>{qualityHint.text}</small></div><div className="quality-rules"><strong>Automático ao sair do demo</strong>{qualityRules.map((rule) => <small key={rule}>{rule}</small>)}</div></label>
             </div>
             <div className="check-grid">
               <CheckCard checked={requirePhone} onChange={setRequirePhone} icon="☎" title="Exigir telefone" text="Só aceita lead com número tecnicamente válido." />
@@ -325,7 +327,7 @@ function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void 
           <span className="eyebrow">Resumo do recorte</span><h2>{city || `Estado de ${uf}`} <small>{uf}</small></h2>
           <div className="summary-block"><span>CNAEs</span><strong>{cnaes.length || 0} segmento{cnaes.length === 1 ? '' : 's'}</strong></div>
           <div className="target-visual"><span>Meta final</span><strong>{targetLabel}</strong><small>{targetIsMax ? 'máximo possível' : 'leads válidos'}</small></div>
-          <div className="criteria-list"><Criteria active={minScore > 0} text={`Score mínimo ${minScore}`} /><Criteria active={requirePhone} text={onlyMobilePhone ? 'Celular obrigatório' : 'Telefone obrigatório'} /><Criteria active={effectiveRequireEmail} text={emailCriteriaText(emailType)} /><Criteria active={requireDecisionMakerMatch} text="Sócio × decisor validado" /><Criteria active={excludeGenericContacts} text="Sem contatos genéricos" /></div>
+          <div className="criteria-list"><Criteria active text={`Qualidade mínima: ${qualityLevelLabel(minQuality)}`} />{qualityRules.slice(0, 3).map((rule) => <Criteria key={rule} active text={rule} />)}<Criteria active={requirePhone} text={onlyMobilePhone ? 'Celular obrigatório' : 'Telefone obrigatório'} /><Criteria active={effectiveRequireEmail} text={emailCriteriaText(emailType)} /><Criteria active={requireDecisionMakerMatch} text="Sócio × decisor validado" /><Criteria active={excludeGenericContacts} text="Sem contatos genéricos" /></div>
           <div className="summary-note"><strong>Por que podem ser processadas mais empresas?</strong><p>{targetIsMax ? `No modo max, o job processa todas as candidatas ${citySearch ? 'da cidade' : 'do estado'} e entrega todos os leads que passarem pelos filtros.` : `Empresas sem contato, score ou match suficiente não contam na meta. O job continua até chegar a ${targetLabel} leads ou esgotar as candidatas.`}</p></div>
         </aside>
       </form>
@@ -442,6 +444,7 @@ function LeadDetailPage({ searchId, resultId, navigate }: { searchId: string; re
         <aside className="detail-side">
           <section className="panel contact-card"><span className="eyebrow">Contato escolhido</span><h2>Canal final de abordagem</h2><ContactItem icon="@" label="E-mail validado" value={result.finalEmail || lead?.finalEmail} meta={lead?.emailCorporate ? 'Corporativo' : lead?.emailGeneric ? 'Genérico' : undefined} /><ContactItem icon="☎" label="Telefone validado" value={result.finalPhone || lead?.finalPhone} meta={lead?.phoneMobile ? 'Celular' : undefined} /><small className="validation-note">“Validado” significa que o contato passou pelas regras técnicas deste MVP.</small></section>
           <section className="panel link-card"><span className="eyebrow">Company Page</span><h3>{companyNameOf(result)}</h3><p>{lead?.companyWebsite || result.candidate?.website || 'Site corporativo não identificado'}</p>{(lead?.companyLinkedinUrl || lead?.linkedinCompanyUrl || lead?.linkedinUrl) ? <a className="button linkedin full" href={lead.companyLinkedinUrl || lead.linkedinCompanyUrl || lead.linkedinUrl} target="_blank" rel="noreferrer">in Abrir no LinkedIn ↗</a> : <span className="button disabled full">Company Page indisponível</span>}</section>
+          {lead?.isDemoEvidence ? <section className="panel warning-card"><strong>Evidência demonstrativa</strong><p>Este resultado usa sinais demo e não deve ser tratado como contato real.</p></section> : null}
           {lead?.warnings?.length ? <section className="panel warning-card"><strong>Pontos de atenção</strong>{lead.warnings.map((warning) => <p key={warning}>! {warning}</p>)}</section> : null}
         </aside>
       </section>
@@ -515,11 +518,38 @@ function routePath(route: RouteState): string { if (route.view === 'new-search')
 function pageTitle(view: View): string { return NAV_ITEMS.find((item) => item.view === view)?.label || 'Dashboard'; }
 function parseCnaes(value: string): string[] { return [...new Set(value.split(/[\s,;]+/).map((item) => item.replace(/\D/g, '')).filter((item) => item.length === 7))]; }
 function emailCriteriaText(emailType: EmailTypeFilter): string { if (emailType === 'corporate') return 'E-mail corporativo'; if (emailType === 'non_corporate') return 'E-mail não corporativo'; return 'E-mail obrigatório'; }
-function scoreQualityHint(score: number): { label: string; text: string; tone: string; coverage: number } {
-  if (score >= 85) return { label: 'Corte muito seletivo', text: `Só entram leads com ${score}+; reduz volume e aumenta a chance de contato completo e match forte.`, tone: 'high', coverage: 96 };
-  if (score >= 70) return { label: 'Corte equilibrado', text: `Leads abaixo de ${score} ficam fora da meta e da exportação; bom equilíbrio entre precisão e volume.`, tone: 'good', coverage: 78 };
-  if (score >= 50) return { label: 'Corte flexível', text: `Mais leads passam, mas alguns podem ter menos sinais de match, contato ou evidência.`, tone: 'medium', coverage: 56 };
-  return { label: 'Corte amplo', text: `Quase tudo que tiver contato válido pode entrar; aumenta volume e exige mais revisão manual.`, tone: 'low', coverage: 34 };
+function qualityLevelLabel(value: LeadQualityLevel | undefined): string {
+  if (value === 'muito_alto') return 'Muito alto';
+  if (value === 'alto') return 'Alto';
+  if (value === 'medio') return 'Médio';
+  return 'Baixo';
+}
+function qualityLevelHint(value: LeadQualityLevel): { label: string; text: string; tone: string; coverage: number } {
+  if (value === 'muito_alto') return { label: 'Qualidade muito alta', text: 'Exige decisor, contato forte e match confiável; reduz volume.', tone: 'high', coverage: 96 };
+  if (value === 'alto') return { label: 'Qualidade alta', text: 'Prioriza LinkedIn real, decisor ou evidência forte sem depender só de uma URL.', tone: 'good', coverage: 78 };
+  if (value === 'medio') return { label: 'Qualidade média', text: 'Aceita contato válido com sinais suficientes de empresa para revisão.', tone: 'medium', coverage: 56 };
+  return { label: 'Qualidade baixa', text: 'Amplia volume e exige mais revisão manual antes de exportar.', tone: 'low', coverage: 34 };
+}
+function qualityRuleLabels(value: LeadQualityLevel): string[] {
+  if (value === 'muito_alto') return [
+    'LinkedIn e dados da empresa reais',
+    'Decisor real com perfil',
+    'Contato do decisor ou e-mail com nome',
+    'Match muito forte',
+  ];
+  if (value === 'alto') return [
+    'LinkedIn real',
+    'Empresa, decisor ou e-mail com nome',
+    'E-mail final não genérico',
+  ];
+  if (value === 'medio') return [
+    'Contato tecnicamente válido',
+    'Algum sinal de empresa',
+  ];
+  return [
+    'Contato tecnicamente válido',
+    'Dados demo bloqueados no modo real',
+  ];
 }
 function statusKey(status: string): string { return String(status || '').toLowerCase(); }
 function isActive(status: string): boolean { return ['pending', 'queued', 'running', 'processing', 'selecting_candidates', 'enriching'].includes(statusKey(status)); }

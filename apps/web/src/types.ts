@@ -19,6 +19,8 @@ export type LeadResultStatus =
 export type EmailTypeFilter = 'any' | 'corporate' | 'non_corporate';
 export type LeadSearchTargetMode = 'fixed' | 'max';
 export type LeadSearchCompletionReason = 'target_reached' | 'candidate_pool_exhausted';
+export type LeadQualityLevel = 'baixo' | 'medio' | 'alto' | 'muito_alto';
+export type MatchConfidenceLevel = 'normal' | 'alta' | 'muito_alta';
 
 export interface CreateLeadSearchInput {
   uf: string;
@@ -27,6 +29,7 @@ export interface CreateLeadSearchInput {
   targetQuantity: number | 'max';
   targetMode?: LeadSearchTargetMode;
   minScore?: number;
+  minQuality: LeadQualityLevel;
   requirePhone: boolean;
   requireEmail: boolean;
   requireDecisionMakerMatch: boolean;
@@ -34,6 +37,14 @@ export interface CreateLeadSearchInput {
   emailType: EmailTypeFilter;
   onlyCorporateEmail: boolean;
   excludeGenericContacts: boolean;
+  requireRealLinkedin?: boolean;
+  requireLinkedinCompanyData?: boolean;
+  requireRealDecisionMaker?: boolean;
+  requireDecisionMakerProfile?: boolean;
+  requireDecisionMakerContact?: boolean;
+  requireNamedEmail?: boolean;
+  requireDecisionMakerPhone?: boolean;
+  matchConfidenceLevel?: MatchConfidenceLevel;
 }
 
 export interface LeadSearch extends Omit<CreateLeadSearchInput, 'targetQuantity' | 'targetMode'> {
@@ -121,6 +132,10 @@ export interface LeadCrossMatchSnapshot {
   phoneMobile?: boolean;
   emailSource?: string;
   phoneSource?: string;
+  linkedinEvidenceLevel?: string;
+  contactEvidenceLevel?: string;
+  isDemoEvidence?: boolean;
+  emailNameMatched?: boolean;
   evidence?: Array<string | EvidenceItem>;
   explanations?: string[];
   warnings?: string[];
