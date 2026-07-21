@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "concurrently -k -n worker,api,web -c auto \"npm run dev:worker\" \"npm run dev:api\" \"npm run dev:web\"",
-    "dev:api": "npm --prefix apps/api run dev",
+    "dev:api": "node scripts/run-api.mjs",
     "dev:web": "npm --prefix apps/web run dev -- --host 0.0.0.0",
     "dev:worker": "node scripts/run-worker.mjs",
     "linkedin:login": "npm --prefix services/linkedin-worker run login",

@@ -4,10 +4,10 @@ import { spawn } from 'node:child_process';
 import net from 'node:net';
 
 const root = process.cwd();
-const workerEntry = join(root, 'services', 'linkedin-worker', 'src', 'server.mjs');
+const apiPackage = join(root, 'apps', 'api', 'package.json');
 
-if (!existsSync(workerEntry)) {
-  console.error('Puppeteer worker not found. Run: npm run install:all');
+if (!existsSync(apiPackage)) {
+  console.error('API app not found. Run this command from the project root.');
   process.exit(1);
 }
 
@@ -28,29 +28,27 @@ function readEnvFile(path) {
 }
 
 const rootEnv = readEnvFile(join(root, '.env'));
-const workerPort = rootEnv.WORKER_PORT ?? '8010';
+const apiPort = rootEnv.PORT ?? '7001';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function isWorkerHealthy(port) {
+async function isApiHealthy(port) {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/health`, {
-      signal: AbortSignal.timeout(1000),
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: AbortSignal.timeout(2500),
     });
     const body = await response.json();
-    return response.ok
-      && body?.worker === 'signalbase-final-mvp-linkedin-worker'
-      && body?.implementation === 'puppeteer';
+    return response.ok && body?.api === 'signalbase-final-mvp-api';
   } catch {
     return false;
   }
 }
 
-async function waitForWorkerHealthy(port) {
+async function waitForApiHealthy(port) {
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    if (await isWorkerHealthy(port)) return true;
+    if (await isApiHealthy(port)) return true;
     await sleep(500);
   }
   return false;
@@ -81,18 +79,18 @@ function keepCurrentProcessAlive() {
   process.once('SIGTERM', shutdown);
 }
 
-if (await waitForWorkerHealthy(workerPort)) {
-  console.log(`LinkedIn worker already running at http://127.0.0.1:${workerPort}. Reusing it.`);
+if (await waitForApiHealthy(apiPort)) {
+  console.log(`API already running at http://127.0.0.1:${apiPort}. Reusing it.`);
   keepCurrentProcessAlive();
-} else if (await isPortOpen(workerPort)) {
-  console.warn(`Port ${workerPort} is already in use, but the LinkedIn worker health check did not respond.`);
-  console.warn('Reusing the existing process to avoid starting a duplicate worker.');
-  console.warn('If LinkedIn enrichment does not work, stop the process using this port and run npm run dev again.');
+} else if (await isPortOpen(apiPort)) {
+  console.warn(`Port ${apiPort} is already in use, but the API health check did not respond.`);
+  console.warn('Reusing the existing process to avoid killing the dev session.');
+  console.warn('If the app cannot load API data, stop the process using this port and run npm run dev again.');
   keepCurrentProcessAlive();
 } else {
   const child = spawn(
-    process.execPath,
-    [workerEntry],
+    process.platform === 'win32' ? 'npm.cmd' : 'npm',
+    ['--prefix', 'apps/api', 'run', 'dev'],
     {
       cwd: root,
       stdio: 'inherit',
