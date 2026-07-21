@@ -1,6 +1,6 @@
 import { DecisionMaker, EnrichedLead, LeadQualityLevel } from '../types.js';
 
-export type LeadSearchStatus = 'queued' | 'processing' | 'completed' | 'exhausted' | 'failed';
+export type LeadSearchStatus = 'queued' | 'processing' | 'paused' | 'blocked' | 'completed' | 'exhausted' | 'failed';
 export type LeadSearchResultStatus = 'valid' | 'rejected' | 'error';
 export type CandidateCountStatus = 'exact' | 'lower_bound';
 export type EmailTypeFilter = 'any' | 'corporate' | 'non_corporate';
@@ -48,6 +48,9 @@ export interface LeadSearch extends LeadSearchFilters {
   completedAt?: string;
   completionReason?: LeadSearchCompletionReason;
   lastError?: string;
+  blockReason?: string;
+  sourceSearchId?: string;
+  reprocessedBySearchId?: string;
 }
 
 export interface ReceitaCompany {
@@ -224,12 +227,14 @@ export interface LeadSearchRepository {
   getSearch(id: string): Promise<LeadSearch | undefined>;
   listSearches(options: LeadSearchRepositoryListOptions): Promise<RepositoryPage<LeadSearch>>;
   updateSearch(id: string, update: Partial<LeadSearch>): Promise<LeadSearch>;
+  deleteSearch(id: string): Promise<boolean>;
   recordProcessed(searchId: string, result: LeadSearchResult, crossMatch?: LeadCrossMatch): Promise<LeadSearch>;
   getResult(searchId: string, resultId: string): Promise<LeadSearchResult | undefined>;
   listResults(searchId: string, options: LeadSearchResultRepositoryListOptions): Promise<RepositoryPage<LeadSearchResult>>;
   setResultSelected(searchId: string, resultId: string, selected: boolean): Promise<LeadSearchResult | undefined>;
   getCrossMatch(id: string | undefined): Promise<LeadCrossMatch | undefined>;
   getCrossMatches(ids: string[]): Promise<LeadCrossMatch[]>;
+  invalidateUntrustedResults(reason: string): Promise<{ invalidated: number; affectedSearchIds: string[] }>;
 }
 
 export interface Pagination<T> {

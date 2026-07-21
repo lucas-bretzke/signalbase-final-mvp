@@ -182,7 +182,7 @@ export function bestPartnerDecisionMakerMatch(
 ): { match: DecisionMakerMatch; person?: DecisionMaker } {
   const eligibleDecisionMakers = env.workerMode === 'demo'
     ? decisionMakers
-    : decisionMakers.filter((person) => !isDemoDecisionMaker(person));
+    : decisionMakers.filter((person) => !isDemoDecisionMaker(person) && person.associationVerified === true);
   if (!partners.length) {
     return { match: { matched: false, confidence: 0, explanation: 'Receita Federal local nao informou socios para comparacao.' } };
   }
@@ -259,7 +259,9 @@ function assessLeadEvidence(
   const hasTrustedCompanyData = env.workerMode === 'demo' ? hasAnyCompanyData : hasRealCompanyData;
   const hasRealLinkedin = Boolean(lead.linkedinUrl) && !isDemoEvidence && !isDemoValue(lead.linkedinProvider);
   const hasTrustedLinkedin = env.workerMode === 'demo' ? Boolean(lead.linkedinUrl) : hasRealLinkedin;
-  const hasRealDecisionMaker = Boolean(decisionMaker) && !isDemoDecisionMaker(decisionMaker);
+  const hasRealDecisionMaker = Boolean(decisionMaker)
+    && !isDemoDecisionMaker(decisionMaker)
+    && decisionMaker?.associationVerified === true;
   const hasTrustedDecisionMaker = env.workerMode === 'demo' ? Boolean(decisionMaker) : hasRealDecisionMaker;
   const hasDecisionMakerProfile = Boolean(decisionMaker?.linkedin_url) && (env.workerMode === 'demo' || !isDemoValue(decisionMaker?.linkedin_url));
   const hasDecisionMakerContact = Boolean(decisionMaker && (email?.source === 'decision_maker' || phone?.source === 'decision_maker'))

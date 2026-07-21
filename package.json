@@ -12,6 +12,7 @@
     "dev:web": "npm --prefix apps/web run dev -- --host 0.0.0.0",
     "dev:worker": "node scripts/run-worker.mjs",
     "linkedin:login": "npm --prefix services/linkedin-worker run login",
+    "linkedin:smoke": "npm --prefix services/linkedin-worker run smoke --",
     "build": "npm --prefix apps/web run build && npm --prefix apps/api run build",
     "start": "npm --prefix apps/api run start",
     "test": "npm --prefix services/linkedin-worker run test && npm --prefix apps/api run test && npm --prefix apps/web run build",

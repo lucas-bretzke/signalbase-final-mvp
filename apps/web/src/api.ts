@@ -6,6 +6,7 @@ import {
   LeadSearch,
   LeadSearchListParams,
   LeadSearchResult,
+  LinkedinDiagnostic,
   PaginatedResponse,
 } from './types';
 
@@ -170,6 +171,9 @@ function normalizeSearch(value: unknown): LeadSearch {
       : data.lastError
         ? String(data.lastError)
         : undefined,
+    blockReason: data.blockReason ? String(data.blockReason) : undefined,
+    sourceSearchId: data.sourceSearchId ? String(data.sourceSearchId) : undefined,
+    reprocessedBySearchId: data.reprocessedBySearchId ? String(data.reprocessedBySearchId) : undefined,
     createdAt: String(data.createdAt ?? new Date().toISOString()),
     updatedAt: String(data.updatedAt ?? data.createdAt ?? new Date().toISOString()),
   };
@@ -238,6 +242,30 @@ export async function createLeadSearch(input: CreateLeadSearchInput): Promise<Le
 
 export async function getAppCapabilities(): Promise<AppCapabilities> {
   return requestJson<AppCapabilities>('/api/capabilities');
+}
+
+export async function testLinkedin(): Promise<LinkedinDiagnostic> {
+  const response = await fetch('/api/linkedin/test', { method: 'POST', headers: { accept: 'application/json' } });
+  return response.json() as Promise<LinkedinDiagnostic>;
+}
+
+export async function resumeLeadSearch(id: string): Promise<LeadSearch> {
+  const response = await requestJson<unknown>(`${basePath}/${encodeURIComponent(id)}/resume`, { method: 'POST' });
+  return normalizeSearch(unwrap(response, 'search'));
+}
+
+export async function pauseLeadSearch(id: string): Promise<LeadSearch> {
+  const response = await requestJson<unknown>(`${basePath}/${encodeURIComponent(id)}/pause`, { method: 'POST' });
+  return normalizeSearch(unwrap(response, 'search'));
+}
+
+export async function reprocessLeadSearch(id: string): Promise<LeadSearch> {
+  const response = await requestJson<unknown>(`${basePath}/${encodeURIComponent(id)}/reprocess`, { method: 'POST' });
+  return normalizeSearch(unwrap(response, 'search'));
+}
+
+export async function deleteLeadSearch(id: string): Promise<void> {
+  await requestJson<void>(`${basePath}/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export async function listLeadSearches(params: LeadSearchListParams = {}): Promise<PaginatedResponse<LeadSearch>> {

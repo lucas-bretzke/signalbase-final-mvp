@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { env, findWebDist } from './env.js';
 import { enrichBatch } from './enrich.js';
 import { batchRequestSchema } from './validation.js';
-import { workerHealth } from './workerClient.js';
+import { testLinkedinSession, workerHealth } from './workerClient.js';
 import { JsonLeadSearchRepository } from './leadSearch/jsonRepository.js';
 import { EnrichmentLeadProcessor } from './leadSearch/leadProcessor.js';
 import { createReceitaCompanySource } from './leadSearch/receitaSourceFactory.js';
@@ -50,6 +50,7 @@ export function buildServer(options: BuildServerOptions = {}) {
     return {
       ok: true,
       api: 'signalbase-final-mvp-api',
+      version: '2.1.0',
       provider: env.searchProvider,
       mode: env.workerMode,
       leadSearch: {
@@ -70,16 +71,32 @@ export function buildServer(options: BuildServerOptions = {}) {
     };
   });
 
-  app.get('/api/capabilities', async () => ({
-    linkedin: {
-      enabled: env.linkedinEnabled,
-      mode: env.workerMode,
-      provider: env.searchProvider,
-    },
-    quality: {
-      muito_alto: env.linkedinEnabled,
-    },
-  }));
+  app.get('/api/capabilities', async () => {
+    const worker = await workerHealth();
+    return {
+      linkedin: {
+        enabled: env.linkedinEnabled,
+        mode: env.workerMode,
+        provider: env.searchProvider,
+        ready: worker.ready === true,
+        implementation: String(worker.implementation ?? ''),
+        runtimeMode: String(worker.runtimeMode ?? worker.mode ?? env.workerMode),
+        sessionState: String(worker.session_state ?? worker.sessionState ?? 'not_checked'),
+        headless: worker.headless === true,
+        lastCheckedAt: worker.last_checked_at ?? worker.lastCheckedAt,
+        lastError: worker.last_error ?? worker.lastError ?? worker.error,
+        errorCode: worker.errorCode,
+      },
+      quality: {
+        muito_alto: env.linkedinEnabled && worker.ok === true && worker.mode === env.workerMode,
+      },
+    };
+  });
+
+  app.post('/api/linkedin/test', async (_request, reply) => {
+    const result = await testLinkedinSession();
+    return reply.status(result.ready === true || env.workerMode === 'demo' ? 200 : 503).send(result);
+  });
 
   app.get('/api/demo-input', async () => ({
     csv: [

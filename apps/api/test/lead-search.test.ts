@@ -20,6 +20,7 @@ import {
   ReceitaCompanySource,
 } from '../src/leadSearch/types.js';
 import { EnrichedLead } from '../src/types.js';
+import { LinkedinBlockingError } from '../src/workerClient.js';
 
 const temporaryDirectories: string[] = [];
 const originalWorkerMode = env.workerMode;
@@ -233,7 +234,7 @@ describe('final lead qualification', () => {
     env.workerMode = 'real';
     const realPerson = {
       name: 'Ana Silva', title: 'Socia e CEO', linkedin_url: 'https://linkedin.com/in/ana-silva',
-      emails: ['ana.silva@gmail.com'], phones: [], confidence: 96, source: 'puppeteer_linkedin',
+      emails: ['ana.silva@gmail.com'], phones: [], confidence: 96, source: 'puppeteer_linkedin', associationVerified: true, associationMethod: 'company_people',
       partner_match: true, matched_partner_name: 'Ana Silva', partner_match_confidence: 95,
     };
     const lead = {
@@ -300,7 +301,7 @@ describe('final lead qualification', () => {
     env.workerMode = 'real';
     const realPerson = {
       name: 'Ana Silva', title: 'Socia e CEO', linkedin_url: 'https://linkedin.com/in/ana-silva',
-      emails: ['ana.silva@acme.com.br'], phones: ['+55 48 99999-0001'], confidence: 96, source: 'puppeteer_linkedin',
+      emails: ['ana.silva@acme.com.br'], phones: ['+55 48 99999-0001'], confidence: 96, source: 'puppeteer_linkedin', associationVerified: true, associationMethod: 'company_people',
       partner_match: true, matched_partner_name: 'Ana Silva', partner_match_confidence: 96,
     };
     const lead = {
@@ -348,6 +349,69 @@ describe('final lead qualification', () => {
 });
 
 describe('job, progress, routes and export', () => {
+  it('blocks immediately when LinkedIn authentication fails without consuming the candidate', async () => {
+    env.workerMode = 'real';
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'signalbase-final-test-'));
+    temporaryDirectories.push(directory);
+    const repository = new JsonLeadSearchRepository(path.join(directory, 'db.json'));
+    const processor: LeadProcessor = {
+      async process() { throw new LinkedinBlockingError('auth_required', 'Sessao expirada.'); },
+    };
+    const service = new LeadSearchService(repository, new MemorySource([company(1)]), processor);
+    const created = await service.create(filters({ targetQuantity: 1 }));
+    await service.waitForIdle();
+    expect(await service.get(created.id)).toMatchObject({
+      status: 'blocked',
+      blockReason: 'auth_required',
+      totalProcessed: 0,
+      totalValidLeads: 0,
+    });
+  });
+
+  it('pauses a queued search without consuming candidates and resumes from the same search', async () => {
+    const { service } = await createService();
+    const created = await service.create(filters({ targetQuantity: 2 }));
+    const paused = await service.pause(created.id);
+
+    expect(paused).toMatchObject({ status: 'paused', totalProcessed: 0 });
+    await service.waitForIdle();
+    expect(await service.get(created.id)).toMatchObject({ status: 'paused', totalProcessed: 0, totalValidLeads: 0 });
+
+    const resumed = await service.resume(created.id);
+    expect(resumed).toMatchObject({ status: 'queued', totalProcessed: 0 });
+    await service.waitForIdle();
+    expect(await service.get(created.id)).toMatchObject({ status: 'completed', totalProcessed: 3, totalValidLeads: 2 });
+  });
+
+  it('deletes a search and its saved results', async () => {
+    const { service } = await createService();
+    const created = await service.create(filters({ targetQuantity: 1 }));
+    await service.waitForIdle();
+    expect(await service.results({ searchId: created.id, page: 1, pageSize: 10 })).toMatchObject({ total: 1 });
+
+    expect(await service.delete(created.id)).toBe(true);
+    expect(await service.get(created.id)).toBeUndefined();
+    expect(await service.results({ searchId: created.id, page: 1, pageSize: 10 })).toBeUndefined();
+  });
+
+  it('invalidates persisted demo evidence and recalculates valid totals in real mode', async () => {
+    env.workerMode = 'demo';
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'signalbase-final-test-'));
+    temporaryDirectories.push(directory);
+    const repository = new JsonLeadSearchRepository(path.join(directory, 'db.json'));
+    const search = { ...searchModel(), status: 'completed' as const, totalProcessed: 0 };
+    await repository.createSearch(search);
+    const outcome = evaluateEnrichedLead(search, company(1), enrichedLead());
+    expect(outcome.result.status).toBe('valid');
+    await repository.recordProcessed(search.id, outcome.result, outcome.crossMatch);
+    env.workerMode = 'real';
+    const service = new LeadSearchService(repository, new MemorySource([]), new AlternatingProcessor());
+    await service.initialize();
+    const page = await service.results({ searchId: search.id, page: 1, pageSize: 10 });
+    expect(await service.get(search.id)).toMatchObject({ totalValidLeads: 0 });
+    expect(page?.items[0]).toMatchObject({ status: 'rejected', selected: false });
+  });
+
   it('streams unindexed candidates without running a blocking count first', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'signalbase-final-test-'));
     temporaryDirectories.push(directory);

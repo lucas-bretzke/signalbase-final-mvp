@@ -62,6 +62,23 @@ export class JsonLeadSearchRepository implements LeadSearchRepository {
     });
   }
 
+  async deleteSearch(id: string): Promise<boolean> {
+    return this.transaction((database) => {
+      const searchIndex = database.searches.findIndex((item) => item.id === id);
+      if (searchIndex < 0) return false;
+      database.searches.splice(searchIndex, 1);
+
+      const removedCrossMatchIds = new Set(
+        database.results
+          .filter((item) => item.leadSearchId === id && item.leadCrossMatchId)
+          .map((item) => item.leadCrossMatchId as string),
+      );
+      database.results = database.results.filter((item) => item.leadSearchId !== id);
+      database.crossMatches = database.crossMatches.filter((item) => !removedCrossMatchIds.has(item.id));
+      return true;
+    });
+  }
+
   async recordProcessed(searchId: string, result: LeadSearchResult, crossMatch?: LeadCrossMatch): Promise<LeadSearch> {
     return this.transaction((database) => {
       const search = requiredSearch(database, searchId);
@@ -118,6 +135,34 @@ export class JsonLeadSearchRepository implements LeadSearchRepository {
     const wanted = new Set(ids);
     const database = await this.snapshot();
     return database.crossMatches.filter((item) => wanted.has(item.id));
+  }
+
+  async invalidateUntrustedResults(reason: string): Promise<{ invalidated: number; affectedSearchIds: string[] }> {
+    return this.transaction((database) => {
+      const crossMatches = new Map(database.crossMatches.map((item) => [item.id, item]));
+      const affectedSearchIds = new Set<string>();
+      let invalidated = 0;
+      const now = new Date().toISOString();
+      for (const result of database.results) {
+        if (result.status !== 'valid' || !result.leadCrossMatchId) continue;
+        const crossMatch = crossMatches.get(result.leadCrossMatchId);
+        const decisionMaker = crossMatch?.decisionMaker;
+        const unverifiedPuppeteer = decisionMaker?.source === 'puppeteer_linkedin'
+          && decisionMaker.associationVerified !== true;
+        if (!crossMatch?.isDemoEvidence && !unverifiedPuppeteer) continue;
+        result.status = 'rejected';
+        result.selected = false;
+        result.rejectionReasons = [...new Set([...(result.rejectionReasons ?? []), reason])];
+        result.updatedAt = now;
+        affectedSearchIds.add(result.leadSearchId);
+        invalidated += 1;
+      }
+      for (const search of database.searches) {
+        search.totalValidLeads = database.results.filter((item) => item.leadSearchId === search.id && item.status === 'valid').length;
+        if (affectedSearchIds.has(search.id)) search.updatedAt = now;
+      }
+      return { invalidated, affectedSearchIds: [...affectedSearchIds] };
+    });
   }
 
   private async load(): Promise<void> {

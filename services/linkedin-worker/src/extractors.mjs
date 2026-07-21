@@ -10,6 +10,9 @@ const DECISION_TERMS = [
   'diretor', 'diretora', 'director', 'cto', 'head', 'presidente', 'president', 'vp',
 ];
 
+const CACHE_SCHEMA_VERSION = 2;
+const SIDEBAR_PEOPLE_TEXT = /segue esta pagina|follows this page|trabalha aqui|works here|pessoas tambem viram|people also viewed|as pessoas tambem/i;
+
 export function normalizeKey(value) {
   return String(value ?? '')
     .normalize('NFKD')
@@ -86,7 +89,9 @@ export function parseCompanySnapshot(snapshot, linkedinUrl) {
       linkedin_url: normalizeCompanyUrl(linkedinUrl) ?? linkedinUrl,
       method_used: 'puppeteer_blocked',
       error: state.reason,
+      errorCode: state.code,
       authenticated: state.authenticated,
+      verificationLevel: 'url_only',
     };
   }
 
@@ -102,13 +107,15 @@ export function parseCompanySnapshot(snapshot, linkedinUrl) {
   const companySize = findPair(pairs, ['tamanho da empresa', 'company size']);
   const headquarters = findPair(pairs, ['sede', 'headquarters']);
   const founded = findPair(pairs, ['fundada em', 'fundado em', 'founded']);
-  const followers = findPair(pairs, ['seguidores', 'followers']) || firstMatch(lines.join(' '), /([\d.,]+)\s+(?:seguidores|followers)/i);
+  const followers = findPair(pairs, ['seguidores', 'followers'])
+    || firstMatch(String(snapshot.headerText ?? ''), /([\d.,]+)\s+(?:seguidores|followers)/i);
   const description = usefulDescription(snapshot.metaDescription, lines, name);
   const [employeesMin, employeesMax] = employeeRange(companySize);
-  const hasCompanyEvidence = Boolean(website || industry || companySize || headquarters || founded || followers || description);
+  const hasCompanyEvidence = Boolean(website || industry || companySize || headquarters || founded || description);
+  const success = Boolean(name && hasCompanyEvidence);
 
   return {
-    success: Boolean(name && hasCompanyEvidence),
+    success,
     linkedin_url: normalizeCompanyUrl(linkedinUrl) ?? linkedinUrl,
     name,
     description,
@@ -122,7 +129,9 @@ export function parseCompanySnapshot(snapshot, linkedinUrl) {
     followers,
     method_used: 'puppeteer_linkedin',
     authenticated: state.authenticated,
-    error: name && hasCompanyEvidence ? undefined : 'A pagina abriu, mas nao apresentou dados corporativos suficientes.',
+    verificationLevel: success ? 'company_verified' : 'url_only',
+    errorCode: success ? undefined : 'no_verified_match',
+    error: success ? undefined : 'A pagina abriu, mas nao apresentou dados corporativos suficientes.',
   };
 }
 
@@ -151,6 +160,7 @@ export function scoreCompanyCandidate(input, candidate, profile) {
 export function parsePeopleRows(rawRows, keyword, companyName) {
   const rows = [];
   for (const raw of rawRows ?? []) {
+    if (SIDEBAR_PEOPLE_TEXT.test(`${raw.name ?? ''} ${raw.context ?? ''}`)) continue;
     const linkedinUrl = normalizeProfileUrl(raw.href);
     const lines = unique(String(raw.context ?? raw.text ?? '').split(/\r?\n/).map(compact).filter(Boolean));
     const name = compact(raw.name) || lines.find((line) => isLikelyPersonName(line));
@@ -169,9 +179,42 @@ export function parsePeopleRows(rawRows, keyword, companyName) {
       confidence: decisionConfidence(title, keyword, companyName, raw.context),
       source: 'puppeteer_linkedin',
       matched_keyword: keyword,
+      associationVerified: Boolean(raw.associationVerified),
+      associationMethod: raw.associationMethod,
+      currentCompanyName: raw.currentCompanyName,
+      currentCompanyLinkedinUrl: normalizeCompanyUrl(raw.currentCompanyLinkedinUrl),
     });
   }
   return dedupePeople(rows);
+}
+
+export function verifyCurrentCompanyAssociation(rows, expected) {
+  const expectedUrl = normalizeCompanyUrl(expected?.linkedinUrl);
+  const expectedName = cleanCompanyName(expected?.companyName);
+  let best;
+  for (const row of rows ?? []) {
+    const text = normalizeKey(row.text);
+    const current = row.current === true
+      || /\b(o momento|atualmente|present|current)\b/.test(text);
+    if (!current) continue;
+    const linkedCompany = (row.companyLinks ?? []).map(normalizeCompanyUrl).find(Boolean);
+    const urlMatch = Boolean(expectedUrl && linkedCompany === expectedUrl);
+    const rowCompanyName = cleanCompanyName(row.companyName ?? row.text);
+    const nameConfidence = expectedName && rowCompanyName
+      ? Math.round(tokenSimilarity(expectedName, rowCompanyName) * 100)
+      : 0;
+    if (!urlMatch && nameConfidence < 88) continue;
+    const confidence = urlMatch ? 100 : nameConfidence;
+    if (!best || confidence > best.confidence) {
+      best = {
+        verified: true,
+        confidence,
+        companyName: compact(row.companyName) || expected?.companyName,
+        companyLinkedinUrl: linkedCompany || expectedUrl,
+      };
+    }
+  }
+  return best ?? { verified: false, confidence: 0 };
 }
 
 export function annotatePartnerMatches(people, partnerNames) {
@@ -219,6 +262,7 @@ export function pageState(snapshot) {
     || /entre para ver|sign in to view|faca login para|join linkedin/.test(text);
   return {
     blocked: challenged || authRequired || !compact(snapshot.bodyText),
+    code: challenged ? 'challenge' : authRequired ? 'auth_required' : !compact(snapshot.bodyText) ? 'navigation_error' : undefined,
     reason: challenged
       ? 'O LinkedIn solicitou verificacao manual; o worker pausou sem tentar contornar o desafio.'
       : authRequired
@@ -229,7 +273,7 @@ export function pageState(snapshot) {
 }
 
 export function cacheKey(prefix, value) {
-  return `${prefix}:${crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+  return `v${CACHE_SCHEMA_VERSION}:${prefix}:${crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
 }
 
 export function dedupePeople(people) {

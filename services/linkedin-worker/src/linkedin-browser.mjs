@@ -15,6 +15,7 @@ import {
   parseCompanySnapshot,
   parsePeopleRows,
   scoreCompanyCandidate,
+  verifyCurrentCompanyAssociation,
 } from './extractors.mjs';
 
 export class LinkedinBrowserWorker {
@@ -26,6 +27,9 @@ export class LinkedinBrowserWorker {
     this.lastNavigationAt = 0;
     this.sessionState = 'not_checked';
     this.lastError = undefined;
+    this.lastCheckedAt = undefined;
+    this.lastOperation = undefined;
+    this.lastSuccessAt = undefined;
   }
 
   async initialize() {
@@ -38,6 +42,10 @@ export class LinkedinBrowserWorker {
       browser_connected: Boolean(this.browser?.connected),
       session_state: this.sessionState,
       last_error: this.lastError,
+      last_checked_at: this.lastCheckedAt,
+      last_operation: this.lastOperation,
+      last_success_at: this.lastSuccessAt,
+      ready: this.options.mode === 'demo' || this.sessionState === 'authenticated',
       profile_directory: this.options.profileDirectory,
       headless: this.options.headless,
       queue: 'serial',
@@ -58,6 +66,7 @@ export class LinkedinBrowserWorker {
           confidence: 99,
           provider: 'input',
           reason: 'URL do LinkedIn informada na entrada.',
+          verificationLevel: 'url_only',
         };
         await this.cache.set(key, result);
         return result;
@@ -105,6 +114,7 @@ export class LinkedinBrowserWorker {
           confidence: best.confidence,
           provider: best.candidate.provider,
           reason: `Pagina localizada e comparada com nome, dominio e localidade. Consulta: ${best.candidate.query}`,
+          verificationLevel: best.profile?.success ? 'company_verified' : 'url_only',
           company_profile: best.profile,
           warnings,
         }
@@ -117,7 +127,8 @@ export class LinkedinBrowserWorker {
             : 'Nenhuma Company Page foi encontrada pelo navegador.',
           warnings,
         };
-    await this.cache.set(key, result);
+    this.recordOperation('resolve_company', result.success, result.reason);
+    if (shouldCacheWorkerResult(result)) await this.cache.set(key, result);
     return result;
   }
 
@@ -132,10 +143,11 @@ export class LinkedinBrowserWorker {
       await this.navigate(page, `${url}/about/`);
       const snapshot = await pageSnapshot(page);
       const profile = parseCompanySnapshot(snapshot, url);
-      this.observeSession(profile.authenticated, profile.error);
+      this.observeSession(profile.authenticated, profile.error, profile.errorCode);
       return profile;
     });
-    await this.cache.set(key, result);
+    this.recordOperation('extract_company', result.success, result.error);
+    if (shouldCacheWorkerResult(result)) await this.cache.set(key, result);
     return result;
   }
 
@@ -162,7 +174,7 @@ export class LinkedinBrowserWorker {
         await autoScroll(page);
         const snapshot = await pageSnapshot(page);
         const state = pageState(snapshot);
-        this.observeSession(state.authenticated, state.reason);
+        this.observeSession(state.authenticated, state.reason, state.code);
         if (state.blocked) {
           warnings.push(state.reason);
           return [];
@@ -172,10 +184,35 @@ export class LinkedinBrowserWorker {
         warnings.push(`Falha ao pesquisar "${keyword}": ${errorMessage(error)}`);
         return [];
       });
-      people = dedupePeople([...people, ...parsePeopleRows(rows, keyword, payload.company_name)]);
+      const verifiedRows = rows.map((row) => ({
+        ...row,
+        associationVerified: true,
+        associationMethod: 'company_people',
+        currentCompanyName: payload.company_name,
+        currentCompanyLinkedinUrl: companyUrl,
+      }));
+      people = dedupePeople([...people, ...parsePeopleRows(verifiedRows, keyword, payload.company_name)]);
     }
 
-    people = annotatePartnerMatches(people, partnerNames).slice(0, maxResults);
+    people = annotatePartnerMatches(people.filter((person) => person.associationVerified), partnerNames);
+    const matchedPartners = new Set(people.filter((person) => person.partner_match).map((person) => person.matched_partner_name));
+    for (const partnerName of partnerNames.filter((name) => !matchedPartners.has(name))) {
+      if (people.length >= maxResults) break;
+      const candidates = await this.searchGlobalPeople(`${partnerName} ${payload.company_name ?? ''}`).catch((error) => {
+        warnings.push(`Busca externa de ${partnerName} falhou: ${errorMessage(error)}`);
+        return [];
+      });
+      for (const candidate of parsePeopleRows(candidates, partnerName, payload.company_name).slice(0, 3)) {
+        const verified = await this.verifyProfileAssociation(candidate, payload, companyUrl).catch((error) => {
+          warnings.push(`Vinculo de ${candidate.name} nao confirmado: ${errorMessage(error)}`);
+          return undefined;
+        });
+        if (verified) people = dedupePeople([...people, verified]);
+        if (people.length >= maxResults) break;
+      }
+    }
+
+    people = annotatePartnerMatches(people.filter((person) => person.associationVerified), partnerNames).slice(0, maxResults);
     if (this.options.extractProfileContacts && people.length) {
       const contactLimit = Math.min(this.options.maxContactProfiles, people.length);
       for (let index = 0; index < contactLimit; index += 1) {
@@ -191,9 +228,67 @@ export class LinkedinBrowserWorker {
       success: people.length > 0,
       source: 'puppeteer_linkedin',
       decision_makers: people,
-      warnings: unique(warnings.filter(Boolean)),
+      warnings: unique([
+        ...warnings.filter(Boolean),
+        ...(people.length ? [] : ['Nenhum decisor com vinculo atual comprovado foi encontrado.']),
+      ]),
+      errorCode: people.length ? undefined : 'no_verified_match',
     };
-    await this.cache.set(key, result);
+    this.recordOperation('search_decision_makers', result.success, result.warnings.at(-1));
+    if (shouldCacheWorkerResult(result)) await this.cache.set(key, result);
+    return result;
+  }
+
+  async searchGlobalPeople(keywords) {
+    return this.withPage(async (page) => {
+      await this.navigate(page, `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(keywords)}`);
+      await autoScroll(page);
+      const snapshot = await pageSnapshot(page);
+      const state = pageState(snapshot);
+      this.observeSession(state.authenticated, state.reason, state.code);
+      return state.blocked ? [] : peopleRows(page);
+    });
+  }
+
+  async verifyProfileAssociation(person, payload, companyUrl) {
+    return this.withPage(async (page) => {
+      await this.navigate(page, `${person.linkedin_url}/details/experience/`);
+      const snapshot = await pageSnapshot(page);
+      const state = pageState(snapshot);
+      this.observeSession(state.authenticated, state.reason, state.code);
+      if (state.blocked) return undefined;
+      const association = verifyCurrentCompanyAssociation(await experienceRows(page), {
+        companyName: payload.company_name,
+        linkedinUrl: companyUrl,
+      });
+      if (!association.verified) return undefined;
+      return {
+        ...person,
+        associationVerified: true,
+        associationMethod: 'current_experience',
+        currentCompanyName: association.companyName ?? payload.company_name,
+        currentCompanyLinkedinUrl: association.companyLinkedinUrl ?? companyUrl,
+        confidence: Math.min(99, Math.max(person.confidence, association.confidence)),
+      };
+    });
+  }
+
+  async checkSession() {
+    const result = await this.withPage(async (page) => {
+      await this.navigate(page, 'https://www.linkedin.com/feed/');
+      const snapshot = await pageSnapshot(page);
+      const state = pageState(snapshot);
+      this.observeSession(state.authenticated, state.reason, state.code);
+      return {
+        ok: state.authenticated && !state.blocked,
+        authenticated: state.authenticated && !state.blocked,
+        sessionState: this.sessionState,
+        errorCode: state.code,
+        error: state.reason,
+        checkedAt: new Date().toISOString(),
+      };
+    });
+    this.recordOperation('session_check', result.ok, result.error);
     return result;
   }
 
@@ -208,7 +303,7 @@ export class LinkedinBrowserWorker {
       await this.navigate(page, `${url}/overlay/contact-info/`);
       const snapshot = await pageSnapshot(page);
       const state = pageState(snapshot);
-      this.observeSession(state.authenticated, state.reason);
+      this.observeSession(state.authenticated, state.reason, state.code);
       return state.blocked ? { emails: [], phones: [] } : contactValues(snapshot);
     });
     await this.cache.set(key, contacts);
@@ -228,7 +323,7 @@ export class LinkedinBrowserWorker {
       await this.navigate(page, `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(keywords)}`);
       const snapshot = await pageSnapshot(page);
       const state = pageState(snapshot);
-      this.observeSession(state.authenticated, state.reason);
+      this.observeSession(state.authenticated, state.reason, state.code);
       return state.blocked ? [] : searchRows(page);
     });
   }
@@ -280,11 +375,19 @@ export class LinkedinBrowserWorker {
     return result;
   }
 
-  observeSession(authenticated, error) {
+  observeSession(authenticated, error, code) {
+    this.lastCheckedAt = new Date().toISOString();
     if (authenticated) this.sessionState = 'authenticated';
-    else if (/Sessao do LinkedIn ausente|login/i.test(String(error ?? ''))) this.sessionState = 'login_required';
-    else if (/verificacao manual|desafio/i.test(String(error ?? ''))) this.sessionState = 'challenge';
+    else if (code === 'auth_required' || /Sessao do LinkedIn ausente|login/i.test(String(error ?? ''))) this.sessionState = 'login_required';
+    else if (code === 'challenge' || /verificacao manual|desafio/i.test(String(error ?? ''))) this.sessionState = 'challenge';
     this.lastError = error || undefined;
+  }
+
+  recordOperation(operation, success, error) {
+    this.lastOperation = operation;
+    this.lastCheckedAt = new Date().toISOString();
+    if (success) this.lastSuccessAt = this.lastCheckedAt;
+    this.lastError = success ? undefined : error || this.lastError;
   }
 
   async close() {
@@ -297,16 +400,19 @@ export class LinkedinBrowserWorker {
 async function pageSnapshot(page) {
   return page.evaluate(() => {
     const compact = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
-    const main = document.querySelector('main') ?? document.body;
-    const links = [...main.querySelectorAll('a[href]')].map((anchor) => ({
+    const root = document.querySelector('main') ?? document.body;
+    const heading = root.querySelector('h1');
+    let headerRoot = heading?.parentElement;
+    while (headerRoot?.parentElement && headerRoot.innerText.length < 120) headerRoot = headerRoot.parentElement;
+    const links = [...root.querySelectorAll('a[href]')].map((anchor) => ({
       href: anchor.href,
       text: compact(anchor.textContent),
     }));
-    const pairs = [...main.querySelectorAll('dt')].map((term) => ({
+    const pairs = [...root.querySelectorAll('dt')].map((term) => ({
       label: compact(term.textContent),
       value: compact(term.nextElementSibling?.textContent),
     })).filter((pair) => pair.label && pair.value);
-    for (const row of main.querySelectorAll('li')) {
+    for (const row of root.querySelectorAll('li')) {
       const children = [...row.children].map((child) => compact(child.textContent)).filter(Boolean);
       if (children.length === 2 && children[0].length < 80 && children[1].length < 300) {
         pairs.push({ label: children[0], value: children[1] });
@@ -315,8 +421,9 @@ async function pageSnapshot(page) {
     return {
       url: location.href,
       title: document.title,
-      bodyText: compact(document.body?.innerText),
-      headings: [...main.querySelectorAll('h1,h2')].map((heading) => compact(heading.textContent)).filter(Boolean),
+      bodyText: String(root.innerText ?? '').trim(),
+      headerText: compact(headerRoot?.innerText),
+      headings: [...root.querySelectorAll('h1,h2')].map((item) => compact(item.textContent)).filter(Boolean),
       metaDescription: document.querySelector('meta[name="description"]')?.getAttribute('content') ?? '',
       links,
       pairs,
@@ -334,16 +441,44 @@ async function searchRows(page) {
 }
 
 async function peopleRows(page) {
-  return page.evaluate(() => [...document.querySelectorAll('a[href*="linkedin.com/in/"], a[href^="/in/"]')].map((anchor) => {
-    const container = anchor.closest('li, article, [data-view-name], [data-chameleon-result-urn]') ?? anchor.parentElement?.parentElement;
-    const name = String(anchor.getAttribute('aria-label') ?? anchor.textContent ?? '').replace(/^View\s+/i, '').trim();
-    return {
-      href: anchor.href,
-      name,
-      text: String(anchor.textContent ?? '').trim(),
-      context: String(container?.innerText ?? container?.textContent ?? '').trim(),
-    };
-  }));
+  return page.evaluate(() => {
+    const root = document.querySelector('main');
+    if (!root) return [];
+    const suspicious = /segue esta p[aá]gina|follows this page|trabalha aqui|works here|people also viewed|pessoas tamb[eé]m/i;
+    return [...root.querySelectorAll('a[href*="linkedin.com/in/"], a[href^="/in/"]')].map((anchor) => {
+      const container = anchor.closest('li, article, [data-view-name], [data-chameleon-result-urn]') ?? anchor.parentElement?.parentElement;
+      const name = String(anchor.getAttribute('aria-label') ?? anchor.textContent ?? '').replace(/^View\s+/i, '').trim();
+      const context = String(container?.innerText ?? container?.textContent ?? '').trim();
+      return {
+        href: anchor.href,
+        name,
+        text: String(anchor.textContent ?? '').trim(),
+        context,
+        rejected: suspicious.test(`${name} ${context}`),
+      };
+    }).filter((row) => !row.rejected);
+  });
+}
+
+async function experienceRows(page) {
+  return page.evaluate(() => {
+    const root = document.querySelector('main');
+    if (!root) return [];
+    const sections = [...root.querySelectorAll('section')];
+    const experience = sections.find((section) => /^(experi[eê]ncia|experience)$/i.test(String(section.querySelector('h2,h1')?.textContent ?? '').trim()))
+      ?? root;
+    return [...experience.querySelectorAll('li')].map((item) => {
+      const text = String(item.innerText ?? item.textContent ?? '').trim();
+      const companyLinks = [...item.querySelectorAll('a[href*="/company/"]')].map((anchor) => anchor.href);
+      const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      return {
+        text,
+        companyName: lines.find((line) => !/^(tempo integral|full-time|part-time|meio periodo)$/i.test(line)),
+        companyLinks,
+        current: /\b(o momento|atualmente|present|current)\b/i.test(text),
+      };
+    }).filter((row) => row.text && row.current);
+  });
 }
 
 async function autoScroll(page) {
@@ -365,4 +500,9 @@ function delay(ms) {
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function shouldCacheWorkerResult(result) {
+  const code = result?.errorCode;
+  return !['auth_required', 'challenge', 'navigation_error', 'worker_unavailable', 'wrong_worker'].includes(code);
 }

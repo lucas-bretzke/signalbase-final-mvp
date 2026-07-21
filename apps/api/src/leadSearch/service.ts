@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
+import { env } from '../env.js';
 import { normalizeCnpj } from '../utils.js';
+import { isLinkedinBlockingError } from '../workerClient.js';
 import { minQualityFromScore, normalizeLeadSearchFilters } from './leadSearchFilters.js';
 import { stableEntityId } from './leadProcessor.js';
 import {
@@ -27,6 +29,7 @@ const REPOSITORY_BATCH_SIZE = 500;
 
 export class LeadSearchService {
   private readonly runningJobs = new Map<string, Promise<void>>();
+  private readonly deletingSearchIds = new Set<string>();
   private initialized = false;
   private stopping = false;
   private readonly batchSize: number;
@@ -46,6 +49,9 @@ export class LeadSearchService {
       this.repository.initialize(),
       this.companySource.initialize?.(),
     ]);
+    if (env.workerMode === 'real') {
+      await this.repository.invalidateUntrustedResults('Resultado antigo invalidado: evidencia demo ou decisor sem vinculo profissional comprovado.');
+    }
     this.initialized = true;
     const resumableIds: string[] = [];
     let offset = 0;
@@ -110,6 +116,79 @@ export class LeadSearchService {
   async get(id: string): Promise<LeadSearchProgress | undefined> {
     const search = await this.repository.getSearch(id);
     return search ? withProgress(search) : undefined;
+  }
+
+  async resume(id: string): Promise<LeadSearchProgress | undefined> {
+    const search = await this.repository.getSearch(id);
+    if (!search) return undefined;
+    if (search.status !== 'blocked' && search.status !== 'paused') return withProgress(search);
+    const resumed = await this.repository.updateSearch(id, {
+      status: 'queued',
+      blockReason: undefined,
+      lastError: undefined,
+      completedAt: undefined,
+      updatedAt: new Date().toISOString(),
+    });
+    this.schedule(id);
+    return withProgress(resumed);
+  }
+
+  async pause(id: string): Promise<LeadSearchProgress | undefined> {
+    const search = await this.repository.getSearch(id);
+    if (!search) return undefined;
+    if (!isActiveSearchStatus(search.status)) return withProgress(search);
+    const paused = await this.repository.updateSearch(id, {
+      status: 'paused',
+      lastError: undefined,
+      updatedAt: new Date().toISOString(),
+    });
+    return withProgress(paused);
+  }
+
+  async delete(id: string): Promise<boolean> {
+    const search = await this.repository.getSearch(id);
+    if (!search) return false;
+    this.deletingSearchIds.add(id);
+    try {
+      return await this.repository.deleteSearch(id);
+    } finally {
+      if (!this.runningJobs.has(id)) this.deletingSearchIds.delete(id);
+    }
+  }
+
+  async reprocess(id: string): Promise<LeadSearchProgress | undefined> {
+    const source = await this.repository.getSearch(id);
+    if (!source) return undefined;
+    if (source.reprocessedBySearchId) return this.get(source.reprocessedBySearchId);
+    const replacement = await this.create({
+      uf: source.uf,
+      city: source.city,
+      cnaes: source.cnaes,
+      targetQuantity: source.targetQuantity,
+      targetMode: source.targetMode,
+      minScore: source.minScore,
+      minQuality: source.minQuality,
+      requirePhone: source.requirePhone,
+      requireEmail: source.requireEmail,
+      requireDecisionMakerMatch: source.requireDecisionMakerMatch,
+      onlyMobilePhone: source.onlyMobilePhone,
+      emailType: source.emailType,
+      onlyCorporateEmail: source.onlyCorporateEmail,
+      excludeGenericContacts: source.excludeGenericContacts,
+      requireRealLinkedin: source.requireRealLinkedin,
+      requireLinkedinCompanyData: source.requireLinkedinCompanyData,
+      requireRealDecisionMaker: source.requireRealDecisionMaker,
+      requireDecisionMakerProfile: source.requireDecisionMakerProfile,
+      requireDecisionMakerContact: source.requireDecisionMakerContact,
+      requireNamedEmail: source.requireNamedEmail,
+      requireDecisionMakerPhone: source.requireDecisionMakerPhone,
+      matchConfidenceLevel: source.matchConfidenceLevel,
+    });
+    await Promise.all([
+      this.repository.updateSearch(id, { reprocessedBySearchId: replacement.id, updatedAt: new Date().toISOString() }),
+      this.repository.updateSearch(replacement.id, { sourceSearchId: id, updatedAt: new Date().toISOString() }),
+    ]);
+    return this.get(replacement.id);
   }
 
   async list(params: { page: number; pageSize: number; status?: LeadSearchStatus }): Promise<Pagination<LeadSearchProgress>> {
@@ -187,15 +266,23 @@ export class LeadSearchService {
     const job = new Promise<void>((resolve) => setImmediate(resolve))
       .then(() => this.runJob(searchId))
       .catch(async (error) => {
+        if (this.deletingSearchIds.has(searchId)) return;
+        const current = await this.repository.getSearch(searchId).catch(() => undefined);
+        if (!current || current.status === 'paused') return;
         const now = new Date().toISOString();
+        const blocked = isLinkedinBlockingError(error);
         await this.repository.updateSearch(searchId, {
-          status: 'failed',
+          status: blocked ? 'blocked' : 'failed',
           lastError: errorMessage(error),
+          blockReason: blocked ? error.code : undefined,
           completedAt: now,
           updatedAt: now,
         }).catch(() => undefined);
       })
-      .finally(() => this.runningJobs.delete(searchId));
+      .finally(() => {
+        this.runningJobs.delete(searchId);
+        this.deletingSearchIds.delete(searchId);
+      });
     this.runningJobs.set(searchId, job);
   }
 
@@ -213,6 +300,7 @@ export class LeadSearchService {
     while (!this.stopping) {
       const search = await this.repository.getSearch(searchId);
       if (!search) return;
+      if (isTerminal(search.status)) return;
       if (targetReached(search)) {
         await this.finish(searchId, 'target_reached');
         return;
@@ -259,11 +347,14 @@ export class LeadSearchService {
         if (this.stopping) return;
         const latest = await this.repository.getSearch(searchId);
         if (!latest) return;
+        if (isTerminal(latest.status)) return;
         if (targetReached(latest)) {
           await this.finish(searchId, 'target_reached');
           return;
         }
         const outcome = await this.processSafely(latest, candidate);
+        const beforeRecord = await this.repository.getSearch(searchId);
+        if (!beforeRecord || isTerminal(beforeRecord.status)) return;
         const updated = await this.repository.recordProcessed(searchId, outcome.result, outcome.crossMatch);
         if (targetReached(updated)) {
           await this.finish(searchId, 'target_reached');
@@ -278,6 +369,7 @@ export class LeadSearchService {
     try {
       return await this.processor.process(search, candidate);
     } catch (error) {
+      if (isLinkedinBlockingError(error)) throw error;
       const now = new Date().toISOString();
       const result: LeadSearchResult = {
         id: stableEntityId('result', `${search.id}:${candidate.cnpj}`),
@@ -352,7 +444,11 @@ export function withProgress(search: LeadSearch): LeadSearchProgress {
 }
 
 function isTerminal(status: LeadSearchStatus): boolean {
-  return status === 'completed' || status === 'exhausted' || status === 'failed';
+  return status === 'paused' || status === 'blocked' || status === 'completed' || status === 'exhausted' || status === 'failed';
+}
+
+function isActiveSearchStatus(status: LeadSearchStatus): boolean {
+  return status === 'queued' || status === 'processing';
 }
 
 function targetModeOf(search: Pick<LeadSearch, 'targetMode'>): LeadSearch['targetMode'] {

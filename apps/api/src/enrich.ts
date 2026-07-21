@@ -123,7 +123,8 @@ async function enrichOne(
     )
     : skippedDecisionSearch();
 
-  const decisionMakers = normalizeDecisionMakers(decisionResponse.decision_makers);
+  const decisionMakers = normalizeDecisionMakers(decisionResponse.decision_makers)
+    .filter((person) => env.workerMode === 'demo' || person.associationVerified === true);
   const bestDecisionMaker = chooseBestDecisionMaker(decisionMakers);
   const baseLead = buildLeadBase({
     input,

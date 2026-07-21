@@ -111,6 +111,14 @@ npm run linkedin:login
 
 Faça login na janela aberta e pressione Enter no terminal quando o feed estiver visível. Depois configure `LINKEDIN_ENABLED=true`, `LINKEDIN_WORKER_MODE=real` e inicie `npm run dev`. O perfil e o cache ficam em `data/`, fora do Git.
 
+Para validar uma empresa isoladamente com o Chrome visível, pare o worker em execução e use:
+
+```powershell
+npm run linkedin:smoke -- --linkedin-url=https://www.linkedin.com/company/ventura-web-solutions --company="VENTURA Web Solutions" --partner="FABRICIO VENTURA"
+```
+
+O teste imprime separadamente sessão, dados da empresa e decisores com vínculo atual comprovado. Se as portas `8010` ou `7001` estiverem ocupadas por outro serviço, `npm run dev` encerra com o PID responsável em vez de reaproveitar um processo incompatível.
+
 Use `LINKEDIN_ENABLED=false` para desligar completamente o cruzamento. Nesse estado, o backend não chama o worker, a qualidade `muito alto` fica bloqueada e os demais níveis usam somente evidências locais. O worker não tenta contornar CAPTCHA ou verificação de segurança; quando isso ocorrer, a sessão precisa ser revisada manualmente.
 
 ### Docker Compose

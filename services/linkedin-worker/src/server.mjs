@@ -5,6 +5,7 @@ import { LinkedinBrowserWorker } from './linkedin-browser.mjs';
 
 const worker = new LinkedinBrowserWorker(config);
 await worker.initialize();
+const WORKER_VERSION = '3.1.0';
 
 const server = http.createServer(async (request, response) => {
   setJsonHeaders(response);
@@ -20,8 +21,10 @@ const server = http.createServer(async (request, response) => {
         ok: true,
         worker: 'signalbase-final-mvp-linkedin-worker',
         implementation: 'puppeteer',
+        version: WORKER_VERSION,
         enabled: config.enabled,
         mode: config.mode,
+        runtimeMode: config.mode,
         ...worker.health(),
         time: Math.floor(Date.now() / 1_000),
       });
@@ -45,11 +48,17 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'POST' && request.url === '/decision-makers/search') {
       return send(response, 200, config.mode === 'demo' ? demoDecisionMakers(body) : await worker.searchDecisionMakers(body));
     }
+    if (request.method === 'POST' && request.url === '/session/check') {
+      return send(response, 200, config.mode === 'demo'
+        ? { ok: true, authenticated: false, sessionState: 'demo', runtimeMode: 'demo', checkedAt: new Date().toISOString() }
+        : await worker.checkSession());
+    }
     return send(response, 404, { success: false, error: 'Rota do worker nao encontrada.' });
   } catch (error) {
     return send(response, 500, {
       success: false,
       source: 'puppeteer_worker_error',
+      errorCode: error?.code || 'navigation_error',
       error: error instanceof Error ? error.message : String(error),
     });
   }

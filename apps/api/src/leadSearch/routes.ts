@@ -1,11 +1,12 @@
 import { stringify } from 'csv-stringify/sync';
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { env } from '../env.js';
+import { testLinkedinSession } from '../workerClient.js';
 import { resultSelectionSchema, leadSearchCreateSchema } from '../validation.js';
 import { LeadSearchService } from './service.js';
 import { LeadSearchResultStatus, LeadSearchStatus } from './types.js';
 
-const SEARCH_STATUSES = new Set<LeadSearchStatus>(['queued', 'processing', 'completed', 'exhausted', 'failed']);
+const SEARCH_STATUSES = new Set<LeadSearchStatus>(['queued', 'processing', 'paused', 'blocked', 'completed', 'exhausted', 'failed']);
 const RESULT_STATUSES = new Set<LeadSearchResultStatus>(['valid', 'rejected', 'error']);
 
 export function registerLeadSearchRoutes(app: FastifyInstance, service: LeadSearchService): void {
@@ -45,6 +46,42 @@ function registerPrefix(app: FastifyInstance, service: LeadSearchService, prefix
     const search = await service.get(id);
     if (!search) return notFound(reply, 'Busca nao encontrada.');
     return { search };
+  });
+
+  app.post(`${prefix}/lead-searches/:id/resume`, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const current = await service.get(id);
+    if (!current) return notFound(reply, 'Busca nao encontrada.');
+    if (current.status === 'blocked') {
+      const diagnostic = await testLinkedinSession();
+      if (diagnostic.ready !== true) {
+        return reply.status(503).send({ ok: false, error: 'LinkedIn ainda nao esta pronto para retomar a busca.', diagnostic });
+      }
+    }
+    const search = await service.resume(id);
+    if (!search) return notFound(reply, 'Busca nao encontrada.');
+    return reply.status(202).send({ search });
+  });
+
+  app.post(`${prefix}/lead-searches/:id/pause`, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const search = await service.pause(id);
+    if (!search) return notFound(reply, 'Busca nao encontrada.');
+    return reply.status(202).send({ search });
+  });
+
+  app.post(`${prefix}/lead-searches/:id/reprocess`, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const search = await service.reprocess(id);
+    if (!search) return notFound(reply, 'Busca nao encontrada.');
+    return reply.status(202).send({ search });
+  });
+
+  app.delete(`${prefix}/lead-searches/:id`, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const deleted = await service.delete(id);
+    if (!deleted) return notFound(reply, 'Busca nao encontrada.');
+    return reply.status(204).send();
   });
 
   app.get(`${prefix}/lead-searches/:id/results`, async (request, reply) => {

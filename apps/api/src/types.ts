@@ -36,8 +36,12 @@ export interface CompanyProfile {
   founded?: string;
   followers?: string;
   method_used?: string;
+  verificationLevel?: 'url_only' | 'company_verified';
+  errorCode?: WorkerErrorCode;
   error?: string;
 }
+
+export type WorkerErrorCode = 'auth_required' | 'challenge' | 'wrong_worker' | 'worker_unavailable' | 'navigation_error' | 'no_verified_match';
 
 export interface DecisionMaker {
   name: string;
@@ -52,6 +56,10 @@ export interface DecisionMaker {
   partner_match?: boolean;
   matched_partner_name?: string;
   partner_match_confidence?: number;
+  associationVerified?: boolean;
+  associationMethod?: 'company_people' | 'current_experience';
+  currentCompanyName?: string;
+  currentCompanyLinkedinUrl?: string;
 }
 
 export interface EnrichedLead {

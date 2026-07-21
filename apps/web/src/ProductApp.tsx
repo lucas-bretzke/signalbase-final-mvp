@@ -2,12 +2,17 @@ import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from 
 import './styles.css';
 import {
   createLeadSearch,
+  deleteLeadSearch,
   exportLeadSearch,
   getAppCapabilities,
   getLeadSearch,
   getLeadSearchResult,
   listLeadSearches,
   listLeadSearchResults,
+  pauseLeadSearch,
+  reprocessLeadSearch,
+  resumeLeadSearch,
+  testLinkedin,
   updateLeadSearchResultSelection,
 } from './api';
 import {
@@ -18,6 +23,7 @@ import {
   LeadQualityLevel,
   LeadSearch,
   LeadSearchResult,
+  LinkedinDiagnostic,
 } from './types';
 import { BrandLogo } from './BrandLogo';
 
@@ -48,6 +54,9 @@ function ProductApp() {
   const [searches, setSearches] = useState<LeadSearch[]>([]);
   const [loadingSearches, setLoadingSearches] = useState(true);
   const [globalError, setGlobalError] = useState<string>();
+  const [linkedinDiagnostic, setLinkedinDiagnostic] = useState<LinkedinDiagnostic>({ ok: false, ready: false, sessionState: 'not_checked' });
+  const [diagnosticOpen, setDiagnosticOpen] = useState(false);
+  const [testingLinkedin, setTestingLinkedin] = useState(false);
 
   const loadSearches = useCallback(async (quiet = false) => {
     if (!quiet) setLoadingSearches(true);
@@ -63,7 +72,13 @@ function ProductApp() {
   }, []);
 
   const handleSearchUpdate = useCallback((updated: LeadSearch) => {
-    setSearches((items) => items.map((item) => item.id === updated.id ? updated : item));
+    setSearches((items) => items.some((item) => item.id === updated.id)
+      ? items.map((item) => item.id === updated.id ? updated : item)
+      : [updated, ...items]);
+  }, []);
+
+  const handleSearchDelete = useCallback((id: string) => {
+    setSearches((items) => items.filter((item) => item.id !== id));
   }, []);
 
   useEffect(() => {
@@ -71,6 +86,39 @@ function ProductApp() {
     const timer = window.setInterval(() => void loadSearches(true), 5000);
     return () => window.clearInterval(timer);
   }, [loadSearches]);
+
+  const loadLinkedinDiagnostic = useCallback(async () => {
+    try {
+      const capabilities = await getAppCapabilities();
+      setLinkedinDiagnostic({
+        ok: capabilities.linkedin.implementation === 'puppeteer' || capabilities.linkedin.mode === 'demo',
+        ready: capabilities.linkedin.ready,
+        implementation: capabilities.linkedin.implementation,
+        mode: capabilities.linkedin.mode,
+        runtimeMode: capabilities.linkedin.runtimeMode,
+        sessionState: capabilities.linkedin.sessionState,
+        headless: capabilities.linkedin.headless,
+        lastCheckedAt: capabilities.linkedin.lastCheckedAt,
+        lastError: capabilities.linkedin.lastError,
+        errorCode: capabilities.linkedin.errorCode,
+      });
+    } catch (error) {
+      setLinkedinDiagnostic({ ok: false, ready: false, error: errorMessage(error), errorCode: 'worker_unavailable' });
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadLinkedinDiagnostic();
+    const timer = window.setInterval(() => void loadLinkedinDiagnostic(), 30_000);
+    return () => window.clearInterval(timer);
+  }, [loadLinkedinDiagnostic]);
+
+  async function runLinkedinTest() {
+    setTestingLinkedin(true);
+    try { setLinkedinDiagnostic(await testLinkedin()); }
+    catch (error) { setLinkedinDiagnostic({ ok: false, ready: false, error: errorMessage(error), errorCode: 'worker_unavailable' }); }
+    finally { setTestingLinkedin(false); }
+  }
 
   useEffect(() => {
     const onPopState = () => setRoute(readRoute());
@@ -124,7 +172,9 @@ function ProductApp() {
           <div><strong>Precisa de ajuda?</strong><small>Consulte o guia do projeto.</small></div>
           <a href="/docs/COMO-FUNCIONA.md" target="_blank" rel="noreferrer">Abrir guia</a>
         </div>
-        <div className="sidebar-foot"><span className="health-dot" /> Base local · ambiente MVP</div>
+        <button className={`sidebar-foot linkedin-runtime ${linkedinStatusOf(linkedinDiagnostic).tone}`} onClick={() => setDiagnosticOpen(true)}>
+          <span className="health-dot" /> {linkedinStatusOf(linkedinDiagnostic).label}
+        </button>
       </aside>
 
       <div className="workspace">
@@ -149,10 +199,10 @@ function ProductApp() {
             }} />
           )}
           {route.view === 'searches' && (
-            <SearchesPage searches={searches} loading={loadingSearches} onRefresh={() => void loadSearches()} navigate={navigate} />
+            <SearchesPage searches={searches} loading={loadingSearches} onRefresh={() => void loadSearches()} navigate={navigate} onSearchUpdate={handleSearchUpdate} onSearchDelete={handleSearchDelete} />
           )}
           {route.view === 'review' && route.searchId && (
-            <ReviewPage searchId={route.searchId} navigate={navigate} onSearchUpdate={handleSearchUpdate} />
+            <ReviewPage searchId={route.searchId} navigate={navigate} onSearchUpdate={handleSearchUpdate} onSearchDelete={handleSearchDelete} />
           )}
           {route.view === 'review' && !route.searchId && <ContextEmpty navigate={navigate} />}
           {route.view === 'detail' && route.searchId && route.resultId && (
@@ -164,6 +214,16 @@ function ProductApp() {
           )}
         </main>
       </div>
+      {diagnosticOpen && (
+        <div className="diagnostic-backdrop" role="presentation" onClick={() => setDiagnosticOpen(false)}>
+          <section className="diagnostic-dialog" role="dialog" aria-modal="true" aria-label="Diagnóstico do LinkedIn" onClick={(event) => event.stopPropagation()}>
+            <div className="diagnostic-title"><div><span className={`health-dot ${linkedinStatusOf(linkedinDiagnostic).tone}`} /><strong>{linkedinStatusOf(linkedinDiagnostic).label}</strong></div><button className="icon-button" onClick={() => setDiagnosticOpen(false)} aria-label="Fechar">×</button></div>
+            <dl><div><dt>Implementação</dt><dd>{linkedinDiagnostic.implementation || 'Indisponível'}</dd></div><div><dt>Modo</dt><dd>{linkedinDiagnostic.runtimeMode || linkedinDiagnostic.mode || 'Desconhecido'}</dd></div><div><dt>Sessão</dt><dd>{linkedinDiagnostic.sessionState || linkedinDiagnostic.session_state || 'Não testada'}</dd></div><div><dt>Navegador</dt><dd>{linkedinDiagnostic.headless === false ? 'Visível' : 'Oculto'}</dd></div><div><dt>Último teste</dt><dd>{formatDiagnosticDate(linkedinDiagnostic)}</dd></div></dl>
+            {(linkedinDiagnostic.lastError || linkedinDiagnostic.last_error || linkedinDiagnostic.error) && <div className="diagnostic-error">{linkedinDiagnostic.lastError || linkedinDiagnostic.last_error || linkedinDiagnostic.error}</div>}
+            <button className="button primary full" disabled={testingLinkedin} onClick={() => void runLinkedinTest()}>{testingLinkedin ? 'Testando conexão…' : 'Testar LinkedIn'}</button>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
@@ -359,28 +419,53 @@ function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void 
   );
 }
 
-function SearchesPage({ searches, loading, onRefresh, navigate }: {
+function SearchesPage({ searches, loading, onRefresh, navigate, onSearchUpdate, onSearchDelete }: {
   searches: LeadSearch[]; loading: boolean; onRefresh: () => void;
   navigate: (view: View, searchId?: string, resultId?: string) => void;
+  onSearchUpdate: (search: LeadSearch) => void;
+  onSearchDelete: (id: string) => void;
 }) {
   const [filter, setFilter] = useState('all');
+  const [actionId, setActionId] = useState<string>();
+  const [actionError, setActionError] = useState<string>();
   const shown = searches.filter((item) => filter === 'all' || (filter === 'processing' ? isActive(item.status) : statusKey(item.status) === filter));
+  async function pauseSearch(search: LeadSearch) {
+    setActionId(search.id); setActionError(undefined);
+    try { onSearchUpdate(await pauseLeadSearch(search.id)); }
+    catch (cause) { setActionError(errorMessage(cause)); }
+    finally { setActionId(undefined); }
+  }
+  async function resumeSearch(search: LeadSearch) {
+    setActionId(search.id); setActionError(undefined);
+    try { onSearchUpdate(await resumeLeadSearch(search.id)); }
+    catch (cause) { setActionError(errorMessage(cause)); }
+    finally { setActionId(undefined); }
+  }
+  async function removeSearch(search: LeadSearch) {
+    if (!window.confirm('Excluir esta busca e todos os resultados salvos? Esta ação não pode ser desfeita.')) return;
+    setActionId(search.id); setActionError(undefined);
+    try { await deleteLeadSearch(search.id); onSearchDelete(search.id); }
+    catch (cause) { setActionError(errorMessage(cause)); }
+    finally { setActionId(undefined); }
+  }
   return (
     <>
       <section className="page-heading heading-actions"><div><span className="eyebrow">Operação</span><h1>Buscas em andamento</h1><p>Acompanhe o funil real entre candidatas processadas e contatos finais.</p></div><div className="heading-buttons"><button className="button secondary" onClick={onRefresh}>↻ Atualizar</button><button className="button primary" onClick={() => navigate('new-search')}>＋ Nova busca</button></div></section>
+      {actionError && <Notice tone="error" onClose={() => setActionError(undefined)}>{actionError}</Notice>}
       <section className="panel table-panel">
-        <div className="toolbar"><div className="segmented"><button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>Todas <b>{searches.length}</b></button><button className={filter === 'processing' ? 'active' : ''} onClick={() => setFilter('processing')}>Em andamento <b>{searches.filter((s) => isActive(s.status)).length}</b></button><button className={filter === 'completed' ? 'active' : ''} onClick={() => setFilter('completed')}>Concluídas</button><button className={filter === 'exhausted' ? 'active' : ''} onClick={() => setFilter('exhausted')}>Esgotadas</button></div></div>
+        <div className="toolbar"><div className="segmented"><button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>Todas <b>{searches.length}</b></button><button className={filter === 'processing' ? 'active' : ''} onClick={() => setFilter('processing')}>Em andamento <b>{searches.filter((s) => isActive(s.status)).length}</b></button><button className={filter === 'paused' ? 'active' : ''} onClick={() => setFilter('paused')}>Pausadas <b>{searches.filter((s) => statusKey(s.status) === 'paused').length}</b></button><button className={filter === 'completed' ? 'active' : ''} onClick={() => setFilter('completed')}>Concluídas</button><button className={filter === 'exhausted' ? 'active' : ''} onClick={() => setFilter('exhausted')}>Esgotadas</button></div></div>
         <div className="yield-guidance"><span aria-hidden="true">i</span><p><strong>Aproveitamento baixo não significa resultado ruim.</strong> Uma taxa menor pode indicar uma filtragem mais rigorosa: boa parte dos candidatos sem qualidade suficiente foi removida antes da entrega.</p></div>
-        {loading ? <LoadingRows /> : shown.length ? <div className="search-table-wrap"><table className="data-table search-table"><thead><tr><th>Recorte</th><th>Progresso da meta</th><th>Candidatas</th><th>Processadas</th><th>Aproveitamento</th><th>Status</th><th /></tr></thead><tbody>{shown.map((search) => <tr key={search.id} onClick={() => navigate('review', search.id)}><td><div className="company-cell"><span>{search.uf}</span><div><strong>{search.city || `Todo ${search.uf}`}</strong><small>{search.cnaes.join(', ')}</small></div></div></td><td><div className="table-progress"><div><strong>{search.totalValidLeads}</strong><span> / {targetLabelOf(search)} {isMaxTarget(search) ? 'possíveis' : 'leads'}</span><small>{searchProgressNote(search)}</small></div><ProgressBar value={progressValueOf(search)} /></div></td><td>{candidateCountOf(search)}</td><td>{search.totalProcessed}</td><td><strong>{formatNumber(search.yieldRate ?? yieldOf(search), 1)}%</strong></td><td><StatusBadge status={search.status} /></td><td><button className="row-action" aria-label="Abrir busca">›</button></td></tr>)}</tbody></table></div> : <EmptyState icon="⌕" title="Nenhuma busca neste estado" text="Ajuste o filtro ou crie um novo recorte." />}
+        {loading ? <LoadingRows /> : shown.length ? <div className="search-table-wrap"><table className="data-table search-table"><thead><tr><th>Recorte</th><th>Progresso da meta</th><th>Candidatas</th><th>Processadas</th><th>Aproveitamento</th><th>Status</th><th>Ações</th></tr></thead><tbody>{shown.map((search) => <tr key={search.id} onClick={() => navigate('review', search.id)}><td><div className="company-cell"><span>{search.uf}</span><div><strong>{search.city || `Todo ${search.uf}`}</strong><small>{search.cnaes.join(', ')}</small></div></div></td><td><div className="table-progress"><div><strong>{search.totalValidLeads}</strong><span> / {targetLabelOf(search)} {isMaxTarget(search) ? 'possíveis' : 'leads'}</span><small>{searchProgressNote(search)}</small></div><ProgressBar value={progressValueOf(search)} /></div></td><td>{candidateCountOf(search)}</td><td>{search.totalProcessed}</td><td><strong>{formatNumber(search.yieldRate ?? yieldOf(search), 1)}%</strong></td><td><StatusBadge status={search.status} /></td><td onClick={(event) => event.stopPropagation()}><SearchActions search={search} busy={actionId === search.id} onOpen={() => navigate('review', search.id)} onPause={() => void pauseSearch(search)} onResume={() => void resumeSearch(search)} onDelete={() => void removeSearch(search)} /></td></tr>)}</tbody></table></div> : <EmptyState icon="⌕" title="Nenhuma busca neste estado" text="Ajuste o filtro ou crie um novo recorte." />}
       </section>
     </>
   );
 }
 
-function ReviewPage({ searchId, navigate, onSearchUpdate }: {
+function ReviewPage({ searchId, navigate, onSearchUpdate, onSearchDelete }: {
   searchId: string;
   navigate: (view: View, searchId?: string, resultId?: string) => void;
   onSearchUpdate: (search: LeadSearch) => void;
+  onSearchDelete: (id: string) => void;
 }) {
   const [search, setSearch] = useState<LeadSearch>();
   const [results, setResults] = useState<LeadSearchResult[]>([]);
@@ -389,6 +474,7 @@ function ReviewPage({ searchId, navigate, onSearchUpdate }: {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [runningAction, setRunningAction] = useState(false);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -416,6 +502,34 @@ function ReviewPage({ searchId, navigate, onSearchUpdate }: {
     } catch (cause) { setError(errorMessage(cause)); }
   }
 
+  async function resumeSearch() {
+    setRunningAction(true); setError(undefined);
+    try { const updated = await resumeLeadSearch(searchId); setSearch(updated); onSearchUpdate(updated); }
+    catch (cause) { setError(errorMessage(cause)); }
+    finally { setRunningAction(false); }
+  }
+
+  async function pauseSearch() {
+    setRunningAction(true); setError(undefined);
+    try { const updated = await pauseLeadSearch(searchId); setSearch(updated); onSearchUpdate(updated); }
+    catch (cause) { setError(errorMessage(cause)); }
+    finally { setRunningAction(false); }
+  }
+
+  async function deleteSearch() {
+    if (!window.confirm('Excluir esta busca e todos os resultados salvos? Esta ação não pode ser desfeita.')) return;
+    setRunningAction(true); setError(undefined);
+    try { await deleteLeadSearch(searchId); onSearchDelete(searchId); navigate('searches'); }
+    catch (cause) { setError(errorMessage(cause)); setRunningAction(false); }
+  }
+
+  async function reprocessSearch() {
+    setRunningAction(true); setError(undefined);
+    try { const replacement = await reprocessLeadSearch(searchId); onSearchUpdate(replacement); navigate('review', replacement.id); }
+    catch (cause) { setError(errorMessage(cause)); }
+    finally { setRunningAction(false); }
+  }
+
   if (loading && !search) return <PageLoader label="Carregando busca e resultados…" />;
   if (!search) return <Notice tone="error">{error || 'Busca não encontrada.'}</Notice>;
   const remaining = remainingQuantityOf(search);
@@ -424,9 +538,18 @@ function ReviewPage({ searchId, navigate, onSearchUpdate }: {
     <>
       <section className="review-hero">
         <div className="review-title"><button className="back-button" onClick={() => navigate('searches')}>←</button><div><span className="eyebrow">Revisão de Leads</span><h1>{search.city || `Todo o estado de ${search.uf}`} <StatusBadge status={search.status} /></h1><p>{search.uf} · CNAEs {search.cnaes.join(', ')} · criada {formatDate(search.createdAt)}</p></div></div>
-        <div className="heading-buttons"><button className="button secondary" onClick={() => void load()}>↻ Atualizar</button><button className="button primary" onClick={() => navigate('exports', search.id)}>Exportar leads ⇩</button></div>
+        <div className="heading-buttons">
+          <button className="button secondary" onClick={() => void load()}>↻ Atualizar</button>
+          {isActive(search.status) && <button className="button secondary" disabled={runningAction} onClick={() => void pauseSearch()}>Pausar</button>}
+          {(statusKey(search.status) === 'paused' || statusKey(search.status) === 'blocked') && <button className="button primary" disabled={runningAction} onClick={() => void resumeSearch()}>{statusKey(search.status) === 'blocked' ? 'Testar e retomar' : 'Retomar'}</button>}
+          {!isActive(search.status) && statusKey(search.status) !== 'paused' && statusKey(search.status) !== 'blocked' ? <button className="button secondary" disabled={runningAction} onClick={() => void reprocessSearch()}>Reprocessar</button> : null}
+          <button className="button secondary danger" disabled={runningAction} onClick={() => void deleteSearch()}>Excluir</button>
+          <button className="button primary" onClick={() => navigate('exports', search.id)}>Exportar leads ⇩</button>
+        </div>
       </section>
       {error && <Notice tone="error" onClose={() => setError(undefined)}>{error}</Notice>}
+      {statusKey(search.status) === 'blocked' && <Notice tone="error"><strong>Busca interrompida para proteger a qualidade.</strong> {search.errorMessage || 'A sessão do LinkedIn precisa ser testada antes de continuar.'}</Notice>}
+      {statusKey(search.status) === 'paused' && <Notice tone="info"><strong>Busca pausada.</strong> Nenhuma nova empresa será consumida até você retomar.</Notice>}
       <section className="progress-hero panel">
         <div className="goal-progress"><div className="goal-number"><strong>{search.totalValidLeads}</strong><span>de {targetLabelOf(search)}</span></div><div><h2>contatos válidos encontrados</h2><p>{reviewProgressCopy(search, remaining)}</p><ProgressBar value={progressValueOf(search)} /></div></div>
         <div className="progress-metrics"><MiniMetric label="Candidatas encontradas" value={candidateCountOf(search)} /><MiniMetric label="Empresas processadas" value={search.totalProcessed} /><MiniMetric label="Leads válidos" value={search.totalValidLeads} accent /><MiniMetric label="Aproveitamento" value={`${formatNumber(search.yieldRate ?? yieldOf(search), 1)}%`} /></div>
@@ -463,7 +586,7 @@ function LeadDetailPage({ searchId, resultId, navigate }: { searchId: string; re
       <section className="detail-grid">
         <div className="detail-main">
           <section className="panel detail-card"><PanelHeader eyebrow="Fonte local" title="Dados da Receita Federal" /><div className="definition-grid"><Definition label="Razão social" value={result.candidate?.legalName || lead?.companyName} /><Definition label="Nome fantasia" value={result.candidate?.tradingName || lead?.tradingName} /><Definition label="Cidade / UF" value={locationOf(result)} /><Definition label="CNAE principal" value={result.cnae || result.candidate?.cnae || lead?.cnae} /><Definition label="Sócios considerados" value={(lead?.partners || result.candidate?.partners || []).join(', ')} wide /></div></section>
-          <section className="panel detail-card"><PanelHeader eyebrow="Cross-match" title="Sócio da Receita × decisor do LinkedIn" action={<MatchPill matched={decisionMatched(result)} />} /><div className="match-compare"><PersonBox label="Sócio na Receita" name={lead?.decisionMakerMatch?.partnerName || partnerOf(result) || 'Não informado'} detail="Quadro societário local" /><span className={decisionMatched(result) ? 'compare-arrow active' : 'compare-arrow'}>⇄</span><PersonBox label="Decisor no LinkedIn" name={decision?.name || 'Não encontrado'} detail={decision?.title || decision?.role || 'Sem cargo disponível'} linkedin={decision?.linkedin_url || decision?.linkedinUrl} /></div><div className="match-explanation"><strong>{lead?.decisionMakerMatch?.confidence ?? 0}% de confiança no match</strong><p>{lead?.decisionMakerMatch?.explanation || 'A comparação usa normalização de nomes e sinais retornados pelo enriquecimento.'}</p></div></section>
+          <section className="panel detail-card"><PanelHeader eyebrow="Cross-match" title="Sócio da Receita × decisor do LinkedIn" action={<MatchPill matched={decisionMatched(result)} />} /><div className="match-compare"><PersonBox label="Sócio na Receita" name={lead?.decisionMakerMatch?.partnerName || partnerOf(result) || 'Não informado'} detail="Quadro societário local" /><span className={decisionMatched(result) ? 'compare-arrow active' : 'compare-arrow'}>⇄</span><PersonBox label="Decisor no LinkedIn" name={decision?.name || 'Não encontrado'} detail={`${decision?.title || decision?.role || 'Sem cargo disponível'} · ${decision?.associationVerified ? 'vínculo atual confirmado' : 'vínculo não confirmado'}`} linkedin={decision?.linkedin_url || decision?.linkedinUrl} /></div><div className="match-explanation"><strong>{lead?.decisionMakerMatch?.confidence ?? 0}% de confiança no match</strong><p>{lead?.decisionMakerMatch?.explanation || 'A comparação usa normalização de nomes e sinais retornados pelo enriquecimento.'}</p></div></section>
           <section className="panel detail-card"><PanelHeader eyebrow="Auditoria" title="Explicações e evidências" /><div className="evidence-list">{evidence.length ? evidence.map((item, index) => <EvidenceRow item={item} key={index} />) : <p className="muted-copy">Nenhuma evidência estruturada foi salva para este resultado.</p>}</div>{result.rejectionReasons?.length ? <div className="rejection-box"><strong>Motivos de rejeição</strong>{result.rejectionReasons.map((reason) => <p key={reason}>{reason}</p>)}</div> : null}</section>
         </div>
         <aside className="detail-side">
@@ -506,6 +629,17 @@ function ExportsPage({ searches, initialSearchId, navigate }: { searches: LeadSe
 }
 
 function MetricCard({ label, value, detail, tone, icon }: { label: string; value: string | number; detail: string; tone: string; icon: string }) { return <article className={`metric-card ${tone}`}><span className="metric-icon">{icon}</span><div><span>{label}</span><strong>{value}</strong><small>{detail}</small></div></article>; }
+function SearchActions({ search, busy, onOpen, onPause, onResume, onDelete }: { search: LeadSearch; busy: boolean; onOpen: () => void; onPause: () => void; onResume: () => void; onDelete: () => void }) {
+  const key = statusKey(search.status);
+  return (
+    <div className="search-actions">
+      <button className="row-action" disabled={busy} onClick={onOpen} aria-label="Abrir busca">›</button>
+      {isActive(search.status) && <button className="mini-action" disabled={busy} onClick={onPause}>Pausar</button>}
+      {(key === 'paused' || key === 'blocked') && <button className="mini-action primary" disabled={busy} onClick={onResume}>Retomar</button>}
+      <button className="mini-action danger" disabled={busy} onClick={onDelete}>Excluir</button>
+    </div>
+  );
+}
 function MiniMetric({ label, value, accent = false }: { label: string; value: string | number; accent?: boolean }) { return <div className={accent ? 'mini-stat accent' : 'mini-stat'}><span>{label}</span><strong>{value}</strong></div>; }
 function PanelHeader({ eyebrow, title, action }: { eyebrow: string; title: string; action?: ReactNode }) { return <div className="panel-header"><div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2></div>{action}</div>; }
 function SectionTitle({ number, title, text }: { number: string; title: string; text: string }) { return <div className="section-title"><span>{number}</span><div><h2>{title}</h2><p>{text}</p></div></div>; }
@@ -514,7 +648,7 @@ function Toggle({ checked, onChange, label, info, infoPlacement = 'left' }: { ch
 function InfoHint({ text, placement = 'left' }: { text: string; placement?: 'left' | 'right' }) { return <span className={`info-hint ${placement}`} tabIndex={0} aria-label={text} data-tooltip={text} onClick={(event) => event.preventDefault()}>i</span>; }
 function Criteria({ active, text }: { active: boolean; text: string }) { return <div className={active ? 'criteria active' : 'criteria'}><span>{active ? '✓' : '—'}</span>{text}</div>; }
 function ProgressBar({ value }: { value: number }) { return <span className="progress-bar"><i style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></span>; }
-function StatusBadge({ status }: { status: string }) { const key = statusKey(status); const labels: Record<string, string> = { queued: 'Na fila', pending: 'Na fila', processing: 'Em andamento', running: 'Em andamento', completed: 'Concluída', exhausted: 'Candidatas esgotadas', failed: 'Falhou', cancelled: 'Cancelada' }; return <span className={`status-badge ${key}`}><i />{labels[key] || status}</span>; }
+function StatusBadge({ status }: { status: string }) { const key = statusKey(status); const labels: Record<string, string> = { queued: 'Na fila', pending: 'Na fila', processing: 'Em andamento', running: 'Em andamento', paused: 'Pausada', blocked: 'LinkedIn bloqueado', completed: 'Concluída', exhausted: 'Candidatas esgotadas', failed: 'Falhou', cancelled: 'Cancelada' }; return <span className={`status-badge ${key}`}><i />{labels[key] || status}</span>; }
 function ResultBadge({ status }: { status: string }) { const key = statusKey(status); const labels: Record<string, string> = { valid: 'Válido', rejected: 'Rejeitado', error: 'Erro', processing: 'Processando', pending: 'Pendente' }; return <span className={`result-badge ${key}`}>{labels[key] || status}</span>; }
 function ScoreBadge({ score, large = false }: { score: number; large?: boolean }) { const tone = score >= 80 ? 'high' : score >= 60 ? 'medium' : 'low'; return <span className={`${large ? 'score-badge large' : 'score-badge'} ${tone}`}><strong>{Math.round(score)}</strong><small>/100</small></span>; }
 function MatchPill({ matched }: { matched: boolean }) { return <span className={matched ? 'match-pill matched' : 'match-pill'}>{matched ? '✓ Match validado' : 'Sem correspondência'}</span>; }
@@ -583,6 +717,19 @@ function qualityRuleLabels(value: LeadQualityLevel, linkedinEnabled = true): str
 }
 function statusKey(status: string): string { return String(status || '').toLowerCase(); }
 function isActive(status: string): boolean { return ['pending', 'queued', 'running', 'processing', 'selecting_candidates', 'enriching'].includes(statusKey(status)); }
+function linkedinStatusOf(value: LinkedinDiagnostic): { label: string; tone: string } {
+  const state = value.sessionState || value.session_state;
+  if (value.mode === 'demo' || value.runtimeMode === 'demo' || state === 'demo') return { label: 'LinkedIn · Demo', tone: 'demo' };
+  if (value.ready && (value.authenticated || state === 'authenticated')) return { label: 'LinkedIn · Real conectado', tone: 'ready' };
+  if (state === 'login_required' || value.errorCode === 'auth_required') return { label: 'LinkedIn · Login necessário', tone: 'error' };
+  if (state === 'challenge' || value.errorCode === 'challenge') return { label: 'LinkedIn · Verificação solicitada', tone: 'warning' };
+  if (state === 'not_checked' && value.ok) return { label: 'LinkedIn · Não testado', tone: 'unknown' };
+  return { label: 'LinkedIn · Indisponível', tone: 'error' };
+}
+function formatDiagnosticDate(value: LinkedinDiagnostic): string {
+  const raw = value.checkedAt || value.lastCheckedAt || value.last_checked_at;
+  return raw ? formatDate(raw) : 'Ainda não testado';
+}
 function isMaxTarget(search: LeadSearch): boolean { return search.targetMode === 'max'; }
 function poolExhausted(search: LeadSearch): boolean { return search.completionReason === 'candidate_pool_exhausted' || statusKey(search.status) === 'exhausted'; }
 function targetLabelOf(search: LeadSearch): string { return isMaxTarget(search) ? 'max' : formatNumber(search.targetQuantity); }

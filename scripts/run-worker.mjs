@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
+import { describePortOwner } from './port-owner.mjs';
 
 const root = process.cwd();
 const workerEntry = join(root, 'services', 'linkedin-worker', 'src', 'server.mjs');
@@ -29,31 +30,39 @@ function readEnvFile(path) {
 
 const rootEnv = readEnvFile(join(root, '.env'));
 const workerPort = rootEnv.WORKER_PORT ?? '8010';
+const expectedMode = String(rootEnv.LINKEDIN_WORKER_MODE ?? 'demo').toLowerCase();
+const expectedVersion = '3.1.0';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function isWorkerHealthy(port) {
+async function workerProbe(port) {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/health`, {
       signal: AbortSignal.timeout(1000),
     });
     const body = await response.json();
-    return response.ok
-      && body?.worker === 'signalbase-final-mvp-linkedin-worker'
-      && body?.implementation === 'puppeteer';
+    return {
+      healthy: response.ok
+        && body?.worker === 'signalbase-final-mvp-linkedin-worker'
+        && body?.implementation === 'puppeteer'
+        && body?.version === expectedVersion
+        && body?.mode === expectedMode,
+      body,
+    };
   } catch {
-    return false;
+    return { healthy: false };
   }
 }
 
 async function waitForWorkerHealthy(port) {
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    if (await isWorkerHealthy(port)) return true;
+    const probe = await workerProbe(port);
+    if (probe.healthy) return probe;
     await sleep(500);
   }
-  return false;
+  return undefined;
 }
 
 function isPortOpen(port) {
@@ -81,14 +90,15 @@ function keepCurrentProcessAlive() {
   process.once('SIGTERM', shutdown);
 }
 
-if (await waitForWorkerHealthy(workerPort)) {
+const existingWorker = await waitForWorkerHealthy(workerPort);
+if (existingWorker) {
   console.log(`LinkedIn worker already running at http://127.0.0.1:${workerPort}. Reusing it.`);
   keepCurrentProcessAlive();
 } else if (await isPortOpen(workerPort)) {
-  console.warn(`Port ${workerPort} is already in use, but the LinkedIn worker health check did not respond.`);
-  console.warn('Reusing the existing process to avoid starting a duplicate worker.');
-  console.warn('If LinkedIn enrichment does not work, stop the process using this port and run npm run dev again.');
-  keepCurrentProcessAlive();
+  const owner = describePortOwner(workerPort);
+  console.error(`Port ${workerPort} is occupied by ${owner}, but it is not the expected Puppeteer worker in mode ${expectedMode}.`);
+  console.error(`Stop that process or change WORKER_PORT, then run npm run dev again.`);
+  process.exit(1);
 } else {
   const child = spawn(
     process.execPath,

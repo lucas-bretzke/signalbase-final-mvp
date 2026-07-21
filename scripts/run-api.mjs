@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
+import { describePortOwner } from './port-owner.mjs';
 
 const root = process.cwd();
 const apiPackage = join(root, 'apps', 'api', 'package.json');
@@ -29,6 +30,7 @@ function readEnvFile(path) {
 
 const rootEnv = readEnvFile(join(root, '.env'));
 const apiPort = rootEnv.PORT ?? '7001';
+const expectedVersion = '2.1.0';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,7 +42,7 @@ async function isApiHealthy(port) {
       signal: AbortSignal.timeout(2500),
     });
     const body = await response.json();
-    return response.ok && body?.api === 'signalbase-final-mvp-api';
+    return response.ok && body?.api === 'signalbase-final-mvp-api' && body?.version === expectedVersion;
   } catch {
     return false;
   }
@@ -83,10 +85,10 @@ if (await waitForApiHealthy(apiPort)) {
   console.log(`API already running at http://127.0.0.1:${apiPort}. Reusing it.`);
   keepCurrentProcessAlive();
 } else if (await isPortOpen(apiPort)) {
-  console.warn(`Port ${apiPort} is already in use, but the API health check did not respond.`);
-  console.warn('Reusing the existing process to avoid killing the dev session.');
-  console.warn('If the app cannot load API data, stop the process using this port and run npm run dev again.');
-  keepCurrentProcessAlive();
+  const owner = describePortOwner(apiPort);
+  console.error(`Port ${apiPort} is occupied by ${owner}, but it is not the SignalBase API.`);
+  console.error(`Stop that process or change PORT, then run npm run dev again.`);
+  process.exit(1);
 } else {
   const child = spawn(
     process.platform === 'win32' ? 'npm.cmd' : 'npm',

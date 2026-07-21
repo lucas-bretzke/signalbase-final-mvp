@@ -2,6 +2,7 @@ export type LeadSearchStatus =
   | 'PENDING'
   | 'QUEUED'
   | 'RUNNING'
+  | 'PAUSED'
   | 'COMPLETED'
   | 'PARTIAL'
   | 'FAILED'
@@ -27,10 +28,38 @@ export interface AppCapabilities {
     enabled: boolean;
     mode: string;
     provider: string;
+    ready: boolean;
+    implementation?: string;
+    runtimeMode?: string;
+    sessionState?: string;
+    headless?: boolean;
+    lastCheckedAt?: string;
+    lastError?: string;
+    errorCode?: string;
   };
   quality: {
     muito_alto: boolean;
   };
+}
+
+export interface LinkedinDiagnostic {
+  ok: boolean;
+  ready: boolean;
+  enabled?: boolean;
+  implementation?: string;
+  mode?: string;
+  runtimeMode?: string;
+  sessionState?: string;
+  session_state?: string;
+  headless?: boolean;
+  authenticated?: boolean;
+  checkedAt?: string;
+  lastCheckedAt?: string;
+  last_checked_at?: string;
+  lastError?: string;
+  last_error?: string;
+  error?: string;
+  errorCode?: string;
 }
 
 export interface CreateLeadSearchInput {
@@ -74,6 +103,9 @@ export interface LeadSearch extends Omit<CreateLeadSearchInput, 'targetQuantity'
   candidateProgressPercent?: number;
   currentStage?: string;
   errorMessage?: string;
+  blockReason?: string;
+  sourceSearchId?: string;
+  reprocessedBySearchId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -105,6 +137,10 @@ export interface DecisionMakerSnapshot {
   linkedin_url?: string;
   matchedPartner?: boolean;
   matchScore?: number;
+  associationVerified?: boolean;
+  associationMethod?: 'company_people' | 'current_experience';
+  currentCompanyName?: string;
+  currentCompanyLinkedinUrl?: string;
 }
 
 export interface LeadCrossMatchSnapshot {
