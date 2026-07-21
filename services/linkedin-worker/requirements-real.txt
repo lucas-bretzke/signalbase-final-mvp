@@ -1,7 +1,0 @@
--r requirements.txt
-pandas>=2.2.3
-requests>=2.32.3
-company-linkedin-info-extractor @ git+https://github.com/shanvel-katesh/company-linkedin-info-extractor.git
-staffspy[browser] @ git+https://github.com/cullenwatson/StaffSpy.git
-playwright>=1.49.1
-playwright-stealth>=1.0.6

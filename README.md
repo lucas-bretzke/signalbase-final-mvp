@@ -32,8 +32,8 @@ O modo antigo de entrada direta por CNPJ continua disponível apenas como recurs
 - persistência operacional JSON, separada da base da Receita, em `LEAD_SEARCH_DB_PATH`;
 - fonte da Receita selecionada por `RECEITA_SOURCE=sqlite|csv`;
 - leitura SQLite somente leitura em `RECEITA_SQLITE_PATH` ou fallback CSV em `RECEITA_CSV_PATH`;
-- worker FastAPI/Python em `services/linkedin-worker`;
-- Company Page resolver e, no modo real, extrator LinkedIn/StaffSpy.
+- worker Node/Puppeteer em `services/linkedin-worker`;
+- descoberta de Company Page, extração corporativa e busca de decisores pelo navegador.
 
 ```text
 Nova Busca
@@ -48,7 +48,7 @@ Nova Busca
 
 ## Início rápido local
 
-Pré-requisitos: Node.js 22+, npm e Python 3.11+. Nas versões do Node 22 em que `node:sqlite` ainda é experimental, inicie os processos com `--experimental-sqlite`.
+Pré-requisitos: Node.js 22+, npm e Chrome/Chromium. Nas versões do Node 22 em que `node:sqlite` ainda é experimental, inicie os processos com `--experimental-sqlite`.
 
 ```powershell
 Copy-Item .env.example .env
@@ -81,8 +81,8 @@ RECEITA_CSV_PATH=./apps/api/data/receita-demo.csv
 Para validar a interface sem acessar LinkedIn, mantenha:
 
 ```dotenv
+LINKEDIN_ENABLED=true
 LINKEDIN_WORKER_MODE=demo
-SEARCH_PROVIDER=demo
 ```
 
 O worker demo aceita empresas locais genéricas, gera resultados determinísticos e usa o primeiro nome de `partner_names` como decisor correspondente. **Nomes, e-mails e telefones produzidos pelo worker demo são fictícios**, servem somente para desenvolvimento e nunca devem ser usados em campanhas ou interpretados como contatos reais da empresa.
@@ -98,23 +98,20 @@ NODE_OPTIONS=--experimental-sqlite npm run dev
 ```powershell
 $env:NODE_OPTIONS='--experimental-sqlite'
 npm test
-.\.venv\Scripts\python.exe -m pytest services\linkedin-worker\tests -q
 npm run build
 ```
 
-Em Linux/macOS, troque o executável Python por `.venv/bin/python`.
+### Worker real com Puppeteer
 
-### Worker real (opcional)
-
-`npm run install:all` instala somente o worker básico/demo. Para habilitar o extrator e StaffSpy localmente, instale também `services/linkedin-worker/requirements-real.txt` com o Python da `.venv`, instale o navegador do Playwright e crie uma sessão sob controle do operador:
+O projeto não usa API paga de busca. O Puppeteer pesquisa a Company Page, abre o LinkedIn, extrai dados corporativos, procura decisores e reaproveita uma sessão persistente controlada pelo operador.
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r services/linkedin-worker/requirements-real.txt
-.\.venv\Scripts\python.exe -m playwright install chromium
-.\.venv\Scripts\python.exe scripts/staffspy-login.py
+npm run linkedin:login
 ```
 
-Em Linux/macOS, use `.venv/bin/python`. Depois configure `LINKEDIN_WORKER_MODE=real`, um provedor de busca real e `LINKEDIN_SESSION_FILE`. Revise os termos e limites das fontes antes de tratar dados reais.
+Faça login na janela aberta e pressione Enter no terminal quando o feed estiver visível. Depois configure `LINKEDIN_ENABLED=true`, `LINKEDIN_WORKER_MODE=real` e inicie `npm run dev`. O perfil e o cache ficam em `data/`, fora do Git.
+
+Use `LINKEDIN_ENABLED=false` para desligar completamente o cruzamento. Nesse estado, o backend não chama o worker, a qualidade `muito alto` fica bloqueada e os demais níveis usam somente evidências locais. O worker não tenta contornar CAPTCHA ou verificação de segurança; quando isso ocorrer, a sessão precisa ser revisada manualmente.
 
 ### Docker Compose
 
@@ -174,10 +171,12 @@ Quando o índice composto ainda não existe, a criação responde sem uma varred
 | `RECEITA_CSV_PATH` | Caminho do CSV consolidado/fictício quando `RECEITA_SOURCE=csv`. |
 | `LEAD_SEARCH_DB_PATH` | Arquivo JSON operacional separado, com buscas, resultados e cross-matches. |
 | `LEAD_SEARCH_BATCH_SIZE` | Quantidade de candidatas lidas por lote interno. |
+| `LINKEDIN_ENABLED` | Liga ou desliga completamente o cruzamento e a disponibilidade de `muito alto`. |
 | `LINKEDIN_WORKER_MODE` | `demo` ou `real`. |
-| `WORKER_URL` | URL interna/externa do worker Python. |
-| `SEARCH_PROVIDER` | Resolvedor de Company Page (`demo`, `duckduckgo` ou `google_cse`). |
-| `LINKEDIN_SESSION_FILE` | Sessão controlada pelo operador para StaffSpy no modo real. |
+| `WORKER_URL` | URL interna/externa do worker Puppeteer. |
+| `LINKEDIN_BROWSER_PROFILE_DIR` | Diretório persistente da sessão do navegador. |
+| `LINKEDIN_CACHE_PATH` | Cache de páginas, perfis e decisões já pesquisadas. |
+| `PUPPETEER_EXECUTABLE_PATH` | Chrome/Chromium do host, quando a detecção automática não for suficiente. |
 | `MAX_BATCH_SIZE` | Proteção de tamanho de lote do enriquecimento interno. |
 | `ENRICH_CONCURRENCY` / `WORKER_CONCURRENCY` | Limites de paralelismo. |
 

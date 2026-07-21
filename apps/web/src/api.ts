@@ -1,4 +1,5 @@
 import {
+  AppCapabilities,
   CreateLeadSearchInput,
   ExportDownload,
   LeadResultListParams,
@@ -233,6 +234,10 @@ export async function createLeadSearch(input: CreateLeadSearchInput): Promise<Le
     body: JSON.stringify(payload),
   });
   return normalizeSearch(unwrap(response, 'search'));
+}
+
+export async function getAppCapabilities(): Promise<AppCapabilities> {
+  return requestJson<AppCapabilities>('/api/capabilities');
 }
 
 export async function listLeadSearches(params: LeadSearchListParams = {}): Promise<PaginatedResponse<LeadSearch>> {

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 describe('enrich fast path', () => {
   beforeEach(() => {
     vi.resetModules();
-    process.env.SEARCH_PROVIDER = 'demo';
+    process.env.LINKEDIN_ENABLED = 'true';
     process.env.LINKEDIN_WORKER_MODE = 'real';
     process.env.BRASILAPI_ENABLED = 'false';
     process.env.ENRICH_CONCURRENCY = '5';
@@ -20,6 +20,7 @@ describe('enrich fast path', () => {
           cnpj: '00.000.000/0001-91',
           razaoSocial: 'Banco do Brasil SA',
           nomeFantasia: 'Banco do Brasil',
+          linkedinUrl: 'https://www.linkedin.com/company/banco-do-brasil-demo',
         },
       ],
     });

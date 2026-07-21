@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { buildServer } from '../src/server.js';
 import { env } from '../src/env.js';
 import { leadSearchCreateSchema } from '../src/validation.js';
-import { evaluateEnrichedLead } from '../src/leadSearch/leadProcessor.js';
+import { EnrichmentLeadProcessor, evaluateEnrichedLead } from '../src/leadSearch/leadProcessor.js';
 import { JsonLeadSearchRepository } from '../src/leadSearch/jsonRepository.js';
 import { CsvReceitaCompanySource } from '../src/leadSearch/receitaCsvSource.js';
 import { LeadSearchService } from '../src/leadSearch/service.js';
@@ -23,9 +23,11 @@ import { EnrichedLead } from '../src/types.js';
 
 const temporaryDirectories: string[] = [];
 const originalWorkerMode = env.workerMode;
+const originalLinkedinEnabled = env.linkedinEnabled;
 
 afterEach(async () => {
   env.workerMode = originalWorkerMode;
+  env.linkedinEnabled = originalLinkedinEnabled;
   await Promise.all(temporaryDirectories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })));
 });
 
@@ -137,6 +139,8 @@ describe('local Receita CSV source', () => {
 
 describe('final lead qualification', () => {
   it('counts a lead only after score, contacts and partner match pass', () => {
+    env.workerMode = 'demo';
+    env.linkedinEnabled = true;
     const search = searchModel({ targetQuantity: 1, minScore: 75, requirePhone: true, requireEmail: true, requireDecisionMakerMatch: true, onlyMobilePhone: true, onlyCorporateEmail: true, excludeGenericContacts: true });
     const candidate = company(1);
     const lead = enrichedLead();
@@ -158,6 +162,8 @@ describe('final lead qualification', () => {
   });
 
   it('can require non-corporate emails only', () => {
+    env.workerMode = 'demo';
+    env.linkedinEnabled = true;
     const candidate = company(1);
     const baseLead = enrichedLead();
     const decisionMaker = baseLead.decisionMakers[0];
@@ -227,7 +233,7 @@ describe('final lead qualification', () => {
     env.workerMode = 'real';
     const realPerson = {
       name: 'Ana Silva', title: 'Socia e CEO', linkedin_url: 'https://linkedin.com/in/ana-silva',
-      emails: ['ana.silva@gmail.com'], phones: [], confidence: 96, source: 'staffspy',
+      emails: ['ana.silva@gmail.com'], phones: [], confidence: 96, source: 'puppeteer_linkedin',
       partner_match: true, matched_partner_name: 'Ana Silva', partner_match_confidence: 95,
     };
     const lead = {
@@ -294,7 +300,7 @@ describe('final lead qualification', () => {
     env.workerMode = 'real';
     const realPerson = {
       name: 'Ana Silva', title: 'Socia e CEO', linkedin_url: 'https://linkedin.com/in/ana-silva',
-      emails: ['ana.silva@acme.com.br'], phones: ['+55 48 99999-0001'], confidence: 96, source: 'staffspy',
+      emails: ['ana.silva@acme.com.br'], phones: ['+55 48 99999-0001'], confidence: 96, source: 'puppeteer_linkedin',
       partner_match: true, matched_partner_name: 'Ana Silva', partner_match_confidence: 96,
     };
     const lead = {
@@ -312,6 +318,32 @@ describe('final lead qualification', () => {
 
     expect(outcome.result.status).toBe('rejected');
     expect(outcome.result.rejectionReasons).toContain('Dados reais da empresa no LinkedIn obrigatorios nao encontrados.');
+  });
+
+  it('uses only local evidence when LinkedIn is disabled and can still reach high quality', async () => {
+    env.workerMode = 'real';
+    env.linkedinEnabled = false;
+    const candidate = {
+      ...company(1),
+      email: 'ana.silva@acme.com.br',
+      website: 'https://acme.com.br',
+    };
+    const outcome = await new EnrichmentLeadProcessor().process(searchModel({
+      minQuality: 'alto',
+      minScore: 70,
+      requireEmail: true,
+      requirePhone: true,
+      requireDecisionMakerMatch: false,
+      excludeGenericContacts: true,
+    }), candidate);
+
+    expect(outcome.result.status).toBe('valid');
+    expect(outcome.crossMatch).toMatchObject({
+      linkedinEvidenceLevel: 'none',
+      emailNameMatched: true,
+      isDemoEvidence: false,
+    });
+    expect(outcome.crossMatch?.warnings).toContain('Sem LinkedIn, nao e possivel confirmar cargo atual, perfil profissional ou vinculo do decisor.');
   });
 });
 

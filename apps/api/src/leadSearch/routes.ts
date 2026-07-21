@@ -1,5 +1,6 @@
 import { stringify } from 'csv-stringify/sync';
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { env } from '../env.js';
 import { resultSelectionSchema, leadSearchCreateSchema } from '../validation.js';
 import { LeadSearchService } from './service.js';
 import { LeadSearchResultStatus, LeadSearchStatus } from './types.js';
@@ -15,6 +16,12 @@ function registerPrefix(app: FastifyInstance, service: LeadSearchService, prefix
   app.post(`${prefix}/lead-searches`, async (request, reply) => {
     const parsed = leadSearchCreateSchema.safeParse(request.body);
     if (!parsed.success) return invalidPayload(reply, parsed.error.flatten());
+    if (!env.linkedinEnabled && parsed.data.minQuality === 'muito_alto') {
+      return reply.status(400).send({
+        ok: false,
+        error: 'Qualidade muito alta exige o cruzamento com LinkedIn. Ative LINKEDIN_ENABLED=true.',
+      });
+    }
     try {
       const search = await service.create(parsed.data);
       return reply.status(202).send({ search });

@@ -11,9 +11,10 @@
     "dev:api": "npm --prefix apps/api run dev",
     "dev:web": "npm --prefix apps/web run dev -- --host 0.0.0.0",
     "dev:worker": "node scripts/run-worker.mjs",
+    "linkedin:login": "npm --prefix services/linkedin-worker run login",
     "build": "npm --prefix apps/web run build && npm --prefix apps/api run build",
     "start": "npm --prefix apps/api run start",
-    "test": "npm --prefix apps/api run test && npm --prefix apps/web run build",
+    "test": "npm --prefix services/linkedin-worker run test && npm --prefix apps/api run test && npm --prefix apps/web run build",
     "install:all": "node scripts/install-all.mjs",
     "preview:static": "npm run build && npm --prefix apps/api run start"
   },

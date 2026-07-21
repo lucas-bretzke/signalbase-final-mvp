@@ -70,6 +70,17 @@ export function buildServer(options: BuildServerOptions = {}) {
     };
   });
 
+  app.get('/api/capabilities', async () => ({
+    linkedin: {
+      enabled: env.linkedinEnabled,
+      mode: env.workerMode,
+      provider: env.searchProvider,
+    },
+    quality: {
+      muito_alto: env.linkedinEnabled,
+    },
+  }));
+
   app.get('/api/demo-input', async () => ({
     csv: [
       'cnpj,razao_social,nome_fantasia,site,email,telefone,socios,linkedin_url',

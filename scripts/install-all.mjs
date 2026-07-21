@@ -21,26 +21,16 @@ function run(command, args, options = {}) {
   }
 }
 
-function findPython() {
+function installedBrowserPath() {
   const candidates = isWindows
     ? [
-        ['py', ['-3']],
-        ['python', []],
-        ['python3', []],
+        'C:/Program Files/Google/Chrome/Application/chrome.exe',
+        'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+        process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Google/Chrome/Application/chrome.exe') : '',
+        'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
       ]
-    : [
-        ['python3', []],
-        ['python', []],
-      ];
-
-  for (const [command, prefixArgs] of candidates) {
-    const result = spawnSync(command, [...prefixArgs, '--version'], {
-      stdio: 'ignore',
-      shell: false,
-    });
-    if (result.status === 0) return { command, prefixArgs };
-  }
-  throw new Error('Python 3 was not found. Install Python 3 and run npm run install:all again.');
+    : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
+  return candidates.find((candidate) => candidate && existsSync(candidate));
 }
 
 async function main() {
@@ -59,19 +49,10 @@ async function main() {
   run('npm', npmInstallArgs);
   run('npm', ['--prefix', 'apps/api', ...npmInstallArgs]);
   run('npm', ['--prefix', 'apps/web', ...npmInstallArgs]);
-
-  const python = findPython();
-  const venvDir = join(root, '.venv');
-  if (!existsSync(venvDir)) {
-    run(python.command, [...python.prefixArgs, '-m', 'venv', '.venv']);
-  }
-
-  const venvPython = isWindows
-    ? join(venvDir, 'Scripts', 'python.exe')
-    : join(venvDir, 'bin', 'python');
-
-  run(venvPython, ['-m', 'pip', 'install', '--upgrade', 'pip']);
-  run(venvPython, ['-m', 'pip', 'install', '-r', 'services/linkedin-worker/requirements.txt']);
+  const browserPath = installedBrowserPath();
+  run('npm', ['--prefix', 'services/linkedin-worker', ...npmInstallArgs], {
+    env: browserPath ? { PUPPETEER_SKIP_DOWNLOAD: 'true', PUPPETEER_EXECUTABLE_PATH: browserPath } : {},
+  });
 }
 
 main().catch((error) => {

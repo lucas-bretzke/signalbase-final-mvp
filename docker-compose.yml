@@ -7,12 +7,14 @@ services:
     env_file:
       - .env
     environment:
-      LINKEDIN_SESSION_FILE: /app/session.pkl
+      WORKER_HOST: 0.0.0.0
+      LINKEDIN_BROWSER_PROFILE_DIR: /app/data/linkedin-browser-profile
+      LINKEDIN_CACHE_PATH: /app/data/linkedin-browser-cache.json
+      PUPPETEER_HEADLESS: "true"
     ports:
       - "8010:8010"
     volumes:
-      - ./services/linkedin-worker/session.pkl:/app/session.pkl
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8010
+      - signalbase-linkedin-data:/app/data
 
   app:
     build:
@@ -43,3 +45,5 @@ services:
 volumes:
   signalbase-operational-data:
     name: signalbase-final-mvp-data
+  signalbase-linkedin-data:
+    name: signalbase-final-mvp-linkedin-data

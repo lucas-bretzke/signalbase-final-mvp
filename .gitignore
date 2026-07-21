@@ -10,6 +10,7 @@ coverage
 *.log
 session.pkl
 services/linkedin-worker/session.pkl
+services/linkedin-worker/data/
 
 # Local Receita source, operational database and generated exports.
 /data/

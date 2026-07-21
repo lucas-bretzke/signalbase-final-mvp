@@ -1,6 +1,15 @@
 import { env } from './env.js';
 import { CompanyProfile, DecisionMaker } from './types.js';
 
+export interface WorkerResolveResult {
+  success: boolean;
+  linkedin_url?: string;
+  confidence: number;
+  provider: string;
+  reason: string;
+  warnings?: string[];
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), env.requestTimeoutMs);
@@ -19,11 +28,57 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 }
 
 export async function workerHealth(): Promise<Record<string, unknown>> {
+  if (!env.linkedinEnabled) {
+    return { ok: true, enabled: false, mode: env.workerMode, implementation: 'puppeteer', skipped: true };
+  }
   try {
     const response = await fetch(`${env.workerUrl}/health`, { signal: AbortSignal.timeout(3000) });
     return (await response.json()) as Record<string, unknown>;
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function resolveCompanyPage(input: {
+  cnpj: string;
+  companyName?: string;
+  tradingName?: string;
+  legalName?: string;
+  domain?: string;
+  website?: string;
+  email?: string;
+  city?: string;
+  uf?: string;
+  linkedinUrl?: string;
+}): Promise<WorkerResolveResult> {
+  if (!env.linkedinEnabled) {
+    return {
+      success: false,
+      confidence: 0,
+      provider: 'linkedin_disabled',
+      reason: 'Cruzamento com LinkedIn desativado por LINKEDIN_ENABLED=false.',
+    };
+  }
+  try {
+    return await postJson<WorkerResolveResult>('/company/resolve', {
+      cnpj: input.cnpj,
+      company_name: input.companyName,
+      trading_name: input.tradingName,
+      legal_name: input.legalName,
+      domain: input.domain,
+      website: input.website,
+      email: input.email,
+      city: input.city,
+      uf: input.uf,
+      linkedin_url: input.linkedinUrl,
+    });
+  } catch (error) {
+    return {
+      success: false,
+      confidence: 0,
+      provider: 'puppeteer_worker_error',
+      reason: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 

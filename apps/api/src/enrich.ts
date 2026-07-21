@@ -137,7 +137,7 @@ async function enrichOne(
   const classification = classifyLead(baseLead);
   const lead: EnrichedLead = { ...baseLead, ...classification };
 
-  if (!includeBelowQuality && env.workerMode !== 'demo' && hasDemoEvidence(resolved.provider, companyProfile.method_used, decisionMakers)) {
+  if (!includeBelowQuality && env.workerMode !== 'demo' && hasDemoEvidence(resolved, companyProfile.method_used, decisionMakers)) {
     return {
       foundLinkedin: Boolean(resolved.linkedinUrl),
       filteredOut: false,
@@ -239,8 +239,12 @@ function buildLeadBase(params: {
   };
 }
 
-function hasDemoEvidence(provider: string | undefined, method: string | undefined, decisionMakers: DecisionMaker[]): boolean {
-  return isDemoValue(provider) || isDemoValue(method) || decisionMakers.some((person) => isDemoValue(person.source) || isDemoValue(person.linkedin_url));
+function hasDemoEvidence(resolved: ResolveResult, method: string | undefined, decisionMakers: DecisionMaker[]): boolean {
+  return isDemoValue(resolved.provider)
+    || isDemoValue(resolved.reason)
+    || isDemoValue(resolved.linkedinUrl)
+    || isDemoValue(method)
+    || decisionMakers.some((person) => isDemoValue(person.source) || isDemoValue(person.linkedin_url));
 }
 
 function isDemoValue(value: string | undefined): boolean {

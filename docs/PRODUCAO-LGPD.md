@@ -11,7 +11,7 @@ Mapeie pelo menos:
 | Dado | Fonte possível | Risco principal |
 | --- | --- | --- |
 | Nome e qualificação do sócio | Receita/ETL local | associação indevida ou dado desatualizado |
-| Nome, cargo e perfil do decisor | LinkedIn/StaffSpy | uso além da expectativa e erro de identidade |
+| Nome, cargo e perfil do decisor | LinkedIn via navegador autorizado | uso além da expectativa e erro de identidade |
 | E-mail e telefone | Receita, empresa ou decisor | contato não desejado, titularidade incorreta |
 | Score, match e evidências | inferência do SignalBase | falsa certeza e impacto reputacional |
 | Histórico de busca/exportação | usuário e aplicação | acesso interno excessivo e vazamento |

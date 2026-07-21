@@ -1,0 +1,16 @@
+{
+  "name": "@signalbase/linkedin-worker",
+  "version": "3.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "dev": "node --watch src/server.mjs",
+    "login": "node src/login.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "puppeteer": "^24.16.0",
+    "signalbase-final-mvp": "file:../.."
+  }
+}

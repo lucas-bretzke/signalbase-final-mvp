@@ -43,6 +43,7 @@ interface LeadEvidenceSignals {
   hasDecisionMakerProfile: boolean;
   hasDecisionMakerContact: boolean;
   hasDecisionMakerPhone: boolean;
+  hasStrongLocalIdentity: boolean;
   matchConfidenceRequired: number;
 }
 
@@ -57,11 +58,14 @@ interface QualityRequirements {
   requireNonGenericEmail: boolean;
   requireCompanyDataDecisionMakerOrNamedEmail: boolean;
   requireDecisionMakerContactOrNamedEmail: boolean;
+  requireStrongLocalIdentity: boolean;
   matchConfidenceRequired?: number;
 }
 
 export class EnrichmentLeadProcessor implements LeadProcessor {
   async process(search: LeadSearch, candidate: ReceitaCompany): Promise<LeadProcessingOutcome> {
+    if (!env.linkedinEnabled) return evaluateEnrichedLead(search, candidate, localLeadFromCandidate(candidate));
+
     const enriched = await enrichCompany({
       cnpj: candidate.cnpj,
       razaoSocial: candidate.legalName,
@@ -269,11 +273,13 @@ function assessLeadEvidence(
     ...candidate.partners,
   ], email.source) : false;
   const hasContact = Boolean(email || phone);
+  const hasStrongLocalIdentity = !env.linkedinEnabled
+    && Boolean(email && phone && (lead.website || candidate.website) && emailNameMatched);
   const minQuality = search.minQuality ?? minQualityFromScore(search.minScore ?? 0);
 
   let qualityLevel: LeadEvidenceSignals['qualityLevel'] = 'baixo';
   if (hasContact && (hasTrustedLinkedin || hasTrustedCompanyData || lead.website || candidate.website)) qualityLevel = 'medio';
-  if (hasContact && (hasTrustedCompanyData || hasTrustedDecisionMaker || (emailNameMatched && hasTrustedLinkedin))) qualityLevel = 'alto';
+  if (hasContact && (hasTrustedCompanyData || hasTrustedDecisionMaker || (emailNameMatched && (hasTrustedLinkedin || hasStrongLocalIdentity)))) qualityLevel = 'alto';
   if (hasContact && hasTrustedDecisionMaker && hasDecisionMakerContact && match.matched && match.confidence >= 85) qualityLevel = 'muito_alto';
 
   return {
@@ -289,12 +295,13 @@ function assessLeadEvidence(
     hasDecisionMakerProfile,
     hasDecisionMakerContact,
     hasDecisionMakerPhone,
+    hasStrongLocalIdentity,
     matchConfidenceRequired: matchConfidenceThreshold(search.matchConfidenceLevel),
   };
 }
 
 function finalScoreFor(baseScore: number, match: DecisionMakerMatch, signals: LeadEvidenceSignals): number {
-  let score = baseScore + (match.matched ? 5 : 0) + (signals.emailNameMatched ? 8 : 0);
+  let score = baseScore + (match.matched ? 5 : 0) + (signals.emailNameMatched ? 8 : 0) + (signals.hasStrongLocalIdentity ? 8 : 0);
   let cap = 99;
   const realMode = env.workerMode !== 'demo';
   if (realMode && signals.isDemoEvidence) cap = 49;
@@ -351,6 +358,7 @@ function validationFailures(
   if ((search.requireDecisionMakerPhone || automatic.requireDecisionMakerPhone) && !signals.hasDecisionMakerPhone) failures.push('Telefone do decisor obrigatorio nao encontrado.');
   if (automatic.requireCompanyDataDecisionMakerOrNamedEmail && !signals.hasLinkedinCompanyData && !signals.hasRealDecisionMaker && !signals.emailNameMatched) failures.push('Qualidade alta exige dados reais da empresa, decisor real ou e-mail com nome do socio/decisor.');
   if (automatic.requireDecisionMakerContactOrNamedEmail && !signals.hasDecisionMakerContact && !signals.emailNameMatched) failures.push('Qualidade muito alta exige contato do decisor ou e-mail com nome do socio/decisor.');
+  if (automatic.requireStrongLocalIdentity && !signals.hasStrongLocalIdentity) failures.push('Sem LinkedIn, qualidade alta exige e-mail com nome, telefone valido e site da empresa.');
   const shouldEnforceMatch = search.requireDecisionMakerMatch || (search.matchConfidenceLevel ?? 'normal') !== 'normal' || Boolean(automatic.matchConfidenceRequired);
   if (shouldEnforceMatch && (!match.matched || match.confidence < requiredMatchConfidence)) failures.push(`Correspondencia entre socio e decisor abaixo de ${requiredMatchConfidence}% de confianca.`);
   return failures;
@@ -382,9 +390,17 @@ function automaticQualityRequirements(value: NonNullable<LeadSearch['minQuality'
     requireNonGenericEmail: false,
     requireCompanyDataDecisionMakerOrNamedEmail: false,
     requireDecisionMakerContactOrNamedEmail: false,
+    requireStrongLocalIdentity: false,
   };
   if (env.workerMode === 'demo' || value === 'baixo' || value === 'medio') return disabled;
   if (value === 'alto') {
+    if (!env.linkedinEnabled) {
+      return {
+        ...disabled,
+        requireNonGenericEmail: true,
+        requireStrongLocalIdentity: true,
+      };
+    }
     return {
       ...disabled,
       requireRealLinkedin: true,
@@ -401,6 +417,47 @@ function automaticQualityRequirements(value: NonNullable<LeadSearch['minQuality'
     requireNonGenericEmail: true,
     requireDecisionMakerContactOrNamedEmail: true,
     matchConfidenceRequired: 95,
+  };
+}
+
+function localLeadFromCandidate(candidate: ReceitaCompany): EnrichedLead {
+  let score = 35;
+  const evidence = ['LinkedIn desativado: avaliacao limitada aos dados locais da Receita e coerencia dos contatos.'];
+  if (candidate.website) {
+    score += 8;
+    evidence.push('Site empresarial presente na fonte local.');
+  }
+  if (candidate.city || candidate.uf) score += 5;
+  if (candidate.phone) {
+    score += 4;
+    evidence.push('Telefone empresarial presente na fonte local; ainda sujeito a validacao tecnica.');
+  }
+  if (candidate.email) {
+    score += 4;
+    evidence.push('E-mail empresarial presente na fonte local; ainda sujeito a validacao tecnica.');
+  }
+  return {
+    id: stableEntityId('local', candidate.cnpj),
+    cnpj: normalizeCnpj(candidate.cnpj),
+    inputName: candidate.tradingName ?? candidate.legalName,
+    companyName: candidate.tradingName ?? candidate.legalName,
+    tradingName: candidate.tradingName,
+    linkedinUrl: '',
+    linkedinProvider: 'linkedin_disabled',
+    linkedinConfidence: 0,
+    linkedinReason: 'Cruzamento com LinkedIn desativado por LINKEDIN_ENABLED=false.',
+    website: candidate.website,
+    city: candidate.city,
+    state: candidate.uf,
+    companyPhone: candidate.phone,
+    companyEmail: candidate.email,
+    companyExtractionSuccess: false,
+    companyExtractionMethod: 'linkedin_disabled',
+    decisionMakers: [],
+    quality: 'baixa',
+    score,
+    evidence,
+    warnings: ['Sem LinkedIn, nao e possivel confirmar cargo atual, perfil profissional ou vinculo do decisor.'],
   };
 }
 

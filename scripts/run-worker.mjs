@@ -3,14 +3,10 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 
 const root = process.cwd();
-const isWindows = process.platform === 'win32';
-const venvDir = join(root, '.venv');
-const python = isWindows
-  ? join(venvDir, 'Scripts', 'python.exe')
-  : join(venvDir, 'bin', 'python');
+const workerEntry = join(root, 'services', 'linkedin-worker', 'src', 'server.mjs');
 
-if (!existsSync(python)) {
-  console.error('Python worker environment not found. Run: npm run install:all');
+if (!existsSync(workerEntry)) {
+  console.error('Puppeteer worker not found. Run: npm run install:all');
   process.exit(1);
 }
 
@@ -39,7 +35,9 @@ async function isWorkerHealthy(port) {
       signal: AbortSignal.timeout(1000),
     });
     const body = await response.json();
-    return response.ok && body?.worker === 'signalbase-final-mvp-linkedin-worker';
+    return response.ok
+      && body?.worker === 'signalbase-final-mvp-linkedin-worker'
+      && body?.implementation === 'puppeteer';
   } catch {
     return false;
   }
@@ -56,16 +54,15 @@ if (await isWorkerHealthy(workerPort)) {
   process.once('SIGTERM', shutdown);
 } else {
   const child = spawn(
-    python,
-    ['-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', workerPort],
+    process.execPath,
+    [workerEntry],
     {
-      cwd: join(root, 'services/linkedin-worker'),
+      cwd: root,
       stdio: 'inherit',
       shell: false,
       env: {
         ...process.env,
         ...rootEnv,
-        PYTHONUNBUFFERED: '1',
       },
     },
   );

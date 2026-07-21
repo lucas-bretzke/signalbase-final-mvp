@@ -3,6 +3,7 @@ import './styles.css';
 import {
   createLeadSearch,
   exportLeadSearch,
+  getAppCapabilities,
   getLeadSearch,
   getLeadSearchResult,
   listLeadSearches,
@@ -238,18 +239,40 @@ function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void 
   const [onlyMobilePhone, setOnlyMobilePhone] = useState(false);
   const [emailType, setEmailType] = useState<EmailTypeFilter>('any');
   const [excludeGenericContacts, setExcludeGenericContacts] = useState(true);
+  const [linkedinEnabled, setLinkedinEnabled] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const cnaes = useMemo(() => parseCnaes(rawCnaes), [rawCnaes]);
   const invalidCnaes = useMemo(() => rawCnaes.split(/[\s,;]+/).filter(Boolean).filter((value) => value.replace(/\D/g, '').length !== 7), [rawCnaes]);
   const effectiveRequireEmail = requireEmail || emailType !== 'any';
   const qualityHint = qualityLevelHint(minQuality);
-  const qualityRules = qualityRuleLabels(minQuality);
+  const qualityRules = qualityRuleLabels(minQuality, linkedinEnabled);
   const citySearch = Boolean(city.trim());
   const targetIsMax = targetQuantityInput.trim().toLowerCase() === 'max';
   const parsedTargetQuantity = Number(targetQuantityInput);
   const targetQuantity = targetIsMax ? 0 : parsedTargetQuantity;
   const targetLabel = targetIsMax ? 'max' : (Number.isFinite(parsedTargetQuantity) && parsedTargetQuantity > 0 ? formatNumber(parsedTargetQuantity) : '0');
+
+  useEffect(() => {
+    let active = true;
+    void getAppCapabilities()
+      .then((capabilities) => {
+        if (!active) return;
+        const enabled = capabilities.linkedin.enabled && capabilities.quality.muito_alto;
+        setLinkedinEnabled(enabled);
+        if (!enabled) {
+          setMinQuality((current) => current === 'muito_alto' ? 'alto' : current);
+          setRequireDecisionMakerMatch(false);
+        }
+      })
+      .catch(() => {
+        if (!active) return;
+        setLinkedinEnabled(false);
+        setMinQuality((current) => current === 'muito_alto' ? 'alto' : current);
+        setRequireDecisionMakerMatch(false);
+      });
+    return () => { active = false; };
+  }, []);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -257,6 +280,7 @@ function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void 
     if (!UFS.includes(uf)) return setError('Selecione uma UF válida.');
     if (!cnaes.length || invalidCnaes.length) return setError('Informe ao menos um CNAE válido com sete dígitos.');
     if (!targetIsMax && (!Number.isInteger(parsedTargetQuantity) || parsedTargetQuantity < 1)) return setError('A quantidade desejada deve ser um número maior que zero ou max.');
+    if (!linkedinEnabled && minQuality === 'muito_alto') return setError('Qualidade muito alta exige o cruzamento com LinkedIn ativo.');
     const input: CreateLeadSearchInput = {
       uf, city: city.trim() || undefined, cnaes, targetQuantity: targetIsMax ? 'max' : targetQuantity, targetMode: targetIsMax ? 'max' : 'fixed', minQuality,
       requirePhone, requireEmail, requireDecisionMakerMatch,
@@ -295,12 +319,12 @@ function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void 
             <SectionTitle number="03" title="O que conta como um lead válido?" text="A meta só avança quando todos os critérios selecionados forem atendidos." />
             <div className="field-grid two quantity-fields">
               <label className="field"><span>Quantidade desejada <b>*</b></span><div className="input-suffix"><input value={targetQuantityInput} onChange={(event) => setTargetQuantityInput(event.target.value)} placeholder="100 ou max" /><i>{targetIsMax ? 'tudo' : 'contatos'}</i></div><small>Use max para processar todas as candidatas {citySearch ? 'da cidade' : 'do estado'}; país inteiro ainda não.</small></label>
-              <label className="field"><span>Qualidade mínima <em>opcional</em></span><div className="quality-control" role="group" aria-label="Qualidade mínima">{(['baixo', 'medio', 'alto', 'muito_alto'] as LeadQualityLevel[]).map((level) => <button key={level} type="button" className={minQuality === level ? 'active' : ''} onClick={() => setMinQuality(level)}>{qualityLevelLabel(level)}</button>)}</div><small>Leads abaixo deste nível são rejeitados.</small><div className={`score-impact ${qualityHint.tone}`}><span><i style={{ width: `${qualityHint.coverage}%` }} /></span><strong>{qualityHint.label}</strong><small>{qualityHint.text}</small></div><div className="quality-rules"><strong>Automático ao sair do demo</strong>{qualityRules.map((rule) => <small key={rule}>{rule}</small>)}</div></label>
+              <label className="field"><span>Qualidade mínima <em>opcional</em></span><div className="quality-control" role="group" aria-label="Qualidade mínima">{(['baixo', 'medio', 'alto', 'muito_alto'] as LeadQualityLevel[]).map((level) => { const unavailable = level === 'muito_alto' && !linkedinEnabled; return <button key={level} type="button" className={minQuality === level ? 'active' : ''} disabled={unavailable} title={unavailable ? 'Ative LINKEDIN_ENABLED para usar este nível.' : undefined} onClick={() => setMinQuality(level)}>{qualityLevelLabel(level)}</button>; })}</div><small>{linkedinEnabled ? 'Leads abaixo deste nível são rejeitados.' : 'Muito alto fica disponível quando o cruzamento com LinkedIn está ativo.'}</small><div className={`score-impact ${qualityHint.tone}`}><span><i style={{ width: `${qualityHint.coverage}%` }} /></span><strong>{qualityHint.label}</strong><small>{qualityHint.text}</small></div><div className="quality-rules"><strong>{linkedinEnabled ? 'Automático no modo real' : 'Validação sem LinkedIn'}</strong>{qualityRules.map((rule) => <small key={rule}>{rule}</small>)}</div></label>
             </div>
             <div className="check-grid">
               <CheckCard checked={requirePhone} onChange={setRequirePhone} icon="☎" title="Exigir telefone" text="Só aceita lead com número tecnicamente válido." />
               <CheckCard checked={effectiveRequireEmail} onChange={(value) => { setRequireEmail(value); if (!value) setEmailType('any'); }} icon="@" title="Exigir e-mail" text="Só aceita lead com endereço tecnicamente válido." />
-              <CheckCard checked={requireDecisionMakerMatch} onChange={setRequireDecisionMakerMatch} icon="≋" title="Decisor validado" text="Exige correspondência entre sócio e decisor." />
+              <CheckCard checked={requireDecisionMakerMatch} onChange={setRequireDecisionMakerMatch} disabled={!linkedinEnabled} icon="≋" title="Decisor validado" text={linkedinEnabled ? 'Exige correspondência entre sócio e decisor.' : 'Disponível quando o LinkedIn estiver ativo.'} />
             </div>
             <details className="advanced-filters">
               <summary>Filtros avançados <span>Mais precisão para os contatos finais</span></summary>
@@ -346,6 +370,7 @@ function SearchesPage({ searches, loading, onRefresh, navigate }: {
       <section className="page-heading heading-actions"><div><span className="eyebrow">Operação</span><h1>Buscas em andamento</h1><p>Acompanhe o funil real entre candidatas processadas e contatos finais.</p></div><div className="heading-buttons"><button className="button secondary" onClick={onRefresh}>↻ Atualizar</button><button className="button primary" onClick={() => navigate('new-search')}>＋ Nova busca</button></div></section>
       <section className="panel table-panel">
         <div className="toolbar"><div className="segmented"><button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>Todas <b>{searches.length}</b></button><button className={filter === 'processing' ? 'active' : ''} onClick={() => setFilter('processing')}>Em andamento <b>{searches.filter((s) => isActive(s.status)).length}</b></button><button className={filter === 'completed' ? 'active' : ''} onClick={() => setFilter('completed')}>Concluídas</button><button className={filter === 'exhausted' ? 'active' : ''} onClick={() => setFilter('exhausted')}>Esgotadas</button></div></div>
+        <div className="yield-guidance"><span aria-hidden="true">i</span><p><strong>Aproveitamento baixo não significa resultado ruim.</strong> Uma taxa menor pode indicar uma filtragem mais rigorosa: boa parte dos candidatos sem qualidade suficiente foi removida antes da entrega.</p></div>
         {loading ? <LoadingRows /> : shown.length ? <div className="search-table-wrap"><table className="data-table search-table"><thead><tr><th>Recorte</th><th>Progresso da meta</th><th>Candidatas</th><th>Processadas</th><th>Aproveitamento</th><th>Status</th><th /></tr></thead><tbody>{shown.map((search) => <tr key={search.id} onClick={() => navigate('review', search.id)}><td><div className="company-cell"><span>{search.uf}</span><div><strong>{search.city || `Todo ${search.uf}`}</strong><small>{search.cnaes.join(', ')}</small></div></div></td><td><div className="table-progress"><div><strong>{search.totalValidLeads}</strong><span> / {targetLabelOf(search)} {isMaxTarget(search) ? 'possíveis' : 'leads'}</span><small>{searchProgressNote(search)}</small></div><ProgressBar value={progressValueOf(search)} /></div></td><td>{candidateCountOf(search)}</td><td>{search.totalProcessed}</td><td><strong>{formatNumber(search.yieldRate ?? yieldOf(search), 1)}%</strong></td><td><StatusBadge status={search.status} /></td><td><button className="row-action" aria-label="Abrir busca">›</button></td></tr>)}</tbody></table></div> : <EmptyState icon="⌕" title="Nenhuma busca neste estado" text="Ajuste o filtro ou crie um novo recorte." />}
       </section>
     </>
@@ -484,7 +509,7 @@ function MetricCard({ label, value, detail, tone, icon }: { label: string; value
 function MiniMetric({ label, value, accent = false }: { label: string; value: string | number; accent?: boolean }) { return <div className={accent ? 'mini-stat accent' : 'mini-stat'}><span>{label}</span><strong>{value}</strong></div>; }
 function PanelHeader({ eyebrow, title, action }: { eyebrow: string; title: string; action?: ReactNode }) { return <div className="panel-header"><div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2></div>{action}</div>; }
 function SectionTitle({ number, title, text }: { number: string; title: string; text: string }) { return <div className="section-title"><span>{number}</span><div><h2>{title}</h2><p>{text}</p></div></div>; }
-function CheckCard({ checked, onChange, icon, title, text }: { checked: boolean; onChange: (value: boolean) => void; icon: string; title: string; text: string }) { return <label className={checked ? 'check-card active' : 'check-card'}><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><span className="check-icon">{icon}</span><span><strong>{title}</strong><small>{text}</small></span><i /></label>; }
+function CheckCard({ checked, onChange, disabled = false, icon, title, text }: { checked: boolean; onChange: (value: boolean) => void; disabled?: boolean; icon: string; title: string; text: string }) { return <label className={`${checked ? 'check-card active' : 'check-card'}${disabled ? ' disabled' : ''}`}><input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} /><span className="check-icon">{icon}</span><span><strong>{title}</strong><small>{text}</small></span><i /></label>; }
 function Toggle({ checked, onChange, label, info, infoPlacement = 'left' }: { checked: boolean; onChange: (value: boolean) => void; label: string; info?: string; infoPlacement?: 'left' | 'right' }) { return <label className="toggle-row"><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i /><span>{label}</span>{info && <InfoHint text={info} placement={infoPlacement} />}</label>; }
 function InfoHint({ text, placement = 'left' }: { text: string; placement?: 'left' | 'right' }) { return <span className={`info-hint ${placement}`} tabIndex={0} aria-label={text} data-tooltip={text} onClick={(event) => event.preventDefault()}>i</span>; }
 function Criteria({ active, text }: { active: boolean; text: string }) { return <div className={active ? 'criteria active' : 'criteria'}><span>{active ? '✓' : '—'}</span>{text}</div>; }
@@ -530,7 +555,12 @@ function qualityLevelHint(value: LeadQualityLevel): { label: string; text: strin
   if (value === 'medio') return { label: 'Qualidade média', text: 'Aceita contato válido com sinais suficientes de empresa para revisão.', tone: 'medium', coverage: 56 };
   return { label: 'Qualidade baixa', text: 'Amplia volume e exige mais revisão manual antes de exportar.', tone: 'low', coverage: 34 };
 }
-function qualityRuleLabels(value: LeadQualityLevel): string[] {
+function qualityRuleLabels(value: LeadQualityLevel, linkedinEnabled = true): string[] {
+  if (!linkedinEnabled) {
+    if (value === 'alto') return ['E-mail não genérico com nome', 'Telefone tecnicamente válido', 'Site empresarial identificado'];
+    if (value === 'medio') return ['Contato tecnicamente válido', 'Algum sinal local da empresa'];
+    return ['Contato tecnicamente válido', 'Sem confirmação de cargo ou vínculo profissional'];
+  }
   if (value === 'muito_alto') return [
     'LinkedIn e dados da empresa reais',
     'Decisor real com perfil',

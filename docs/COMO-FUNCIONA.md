@@ -128,13 +128,15 @@ Isso torna a execução reproduzível e permite testar centenas de candidatas. *
 
 ### Worker real
 
-O modo `real` preserva o fluxo do extrator de Company Page e StaffSpy. Os mesmos campos `partner_names` são opcionais, portanto clientes antigos continuam compatíveis. Pessoas encontradas recebem os metadados adicionais:
+O modo `real` usa um worker Node/Puppeteer com perfil persistente. Ele descobre a Company Page sem API paga, abre a página corporativa, extrai os dados visíveis, pesquisa pessoas por nomes de sócios e cargos e, quando a sessão permite, lê os contatos exibidos no perfil. Os mesmos campos `partner_names` são opcionais, portanto clientes antigos continuam compatíveis. Pessoas encontradas recebem os metadados adicionais:
 
 - `partner_match`;
 - `matched_partner_name`;
 - `partner_match_confidence`.
 
-Uma sessão LinkedIn válida e controlada pelo operador é necessária. Limites, termos de uso e disponibilidade das fontes continuam aplicáveis.
+Uma sessão LinkedIn válida e controlada pelo operador é necessária. O worker serializa a navegação, aplica intervalo entre páginas e usa cache para evitar acessos repetidos. Ele não contorna CAPTCHA ou desafios: registra o bloqueio e exige revisão manual da sessão. Limites, termos de uso e disponibilidade das fontes continuam aplicáveis.
+
+Com `LINKEDIN_ENABLED=false`, nenhuma chamada ao worker é feita. A qualidade `muito alto` fica indisponível; `baixo`, `médio` e `alto` usam somente contatos e sinais locais, sem afirmar que cargo ou vínculo profissional estão atuais.
 
 ## 5. Contato final e filtros
 

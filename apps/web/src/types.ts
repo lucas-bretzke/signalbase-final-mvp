@@ -22,6 +22,17 @@ export type LeadSearchCompletionReason = 'target_reached' | 'candidate_pool_exha
 export type LeadQualityLevel = 'baixo' | 'medio' | 'alto' | 'muito_alto';
 export type MatchConfidenceLevel = 'normal' | 'alta' | 'muito_alta';
 
+export interface AppCapabilities {
+  linkedin: {
+    enabled: boolean;
+    mode: string;
+    provider: string;
+  };
+  quality: {
+    muito_alto: boolean;
+  };
+}
+
 export interface CreateLeadSearchInput {
   uf: string;
   city?: string;

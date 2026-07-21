@@ -21,18 +21,25 @@ function receitaSourceKind(value: string | undefined): ReceitaSourceKind {
   throw new Error(`RECEITA_SOURCE invalido: ${normalized}. Use "sqlite" ou "csv".`);
 }
 
+function booleanValue(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined || !value.trim()) return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+}
+
+const workerMode = (process.env.LINKEDIN_WORKER_MODE ?? 'demo').toLowerCase();
+const linkedinEnabled = booleanValue(process.env.LINKEDIN_ENABLED, true);
+
 export const env = {
   port: Number(process.env.PORT ?? 7001),
   host: process.env.HOST ?? '0.0.0.0',
   workerUrl: process.env.WORKER_URL ?? 'http://127.0.0.1:8010',
-  searchProvider: (process.env.SEARCH_PROVIDER ?? 'demo').toLowerCase(),
-  googleCseApiKey: process.env.GOOGLE_CSE_API_KEY ?? '',
-  googleCseId: process.env.GOOGLE_CSE_ID ?? '',
+  linkedinEnabled,
+  searchProvider: linkedinEnabled ? (workerMode === 'demo' ? 'demo' : 'puppeteer') : 'disabled',
   brasilApiEnabled: (process.env.BRASILAPI_ENABLED ?? 'false').toLowerCase() === 'true',
   brasilApiTimeoutMs: Number(process.env.BRASILAPI_TIMEOUT_MS ?? 9000),
   maxBatchSize: Number(process.env.MAX_BATCH_SIZE ?? 200),
   requestTimeoutMs: Number(process.env.REQUEST_TIMEOUT_MS ?? 120000),
-  workerMode: (process.env.LINKEDIN_WORKER_MODE ?? 'demo').toLowerCase(),
+  workerMode,
   enrichConcurrency: Math.max(1, Number(process.env.ENRICH_CONCURRENCY ?? 5)),
   workerConcurrency: Math.max(1, Number(process.env.WORKER_CONCURRENCY ?? 2)),
   receitaSource: receitaSourceKind(process.env.RECEITA_SOURCE),
