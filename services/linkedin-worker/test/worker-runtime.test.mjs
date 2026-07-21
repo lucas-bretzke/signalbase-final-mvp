@@ -125,6 +125,38 @@ test('health is not ready when the worker is disabled, including demo mode', () 
   assert.equal(worker.health().readiness_reason, 'disabled');
 });
 
+test('health marks authenticated sessions stale after the freshness window', () => {
+  const now = 1_800_000_000_000;
+  const worker = new LinkedinBrowserWorker(
+    { ...options, enabled: true, executablePath: 'chrome', sessionFreshnessMs: 1_000 },
+    { cache: fakeCache(), logger: () => undefined, now: () => now },
+  );
+  worker.sessionState = 'authenticated';
+  worker.lastCheckedAt = new Date(now - 500).toISOString();
+  assert.equal(worker.health().ready, true);
+
+  worker.lastCheckedAt = new Date(now - 2_000).toISOString();
+  assert.equal(worker.health().ready, false);
+  assert.equal(worker.health().readiness_reason, 'session_stale');
+});
+
+test('close cancels active work and returns after the configured shutdown timeout', async () => {
+  const worker = new LinkedinBrowserWorker(
+    { ...options, enabled: true, shutdownTimeoutMs: 10, resourceCloseTimeoutMs: 10 },
+    { cache: fakeCache(), logger: () => undefined },
+  );
+  const context = createOperationContext({ deadline: Date.now() + 2_000 });
+  const running = worker.queue.enqueue(async () => new Promise(() => undefined), { context, operation: 'stuck' });
+  const rejected = running.catch((error) => error);
+  await nextTurn();
+
+  await worker.close();
+  assert.equal((await rejected).code, 'request_cancelled');
+  assert.equal(worker.health().queueDepth, 0);
+
+  context.dispose();
+});
+
 test('browser launch timeout is classified as worker_unavailable', async () => {
   const timeout = Object.assign(new Error('Timed out while launching the browser'), { name: 'TimeoutError' });
   const worker = new LinkedinBrowserWorker(options, {

@@ -103,6 +103,54 @@ test('a write prunes expired entries from inactive mode and extractor namespaces
   assert.equal(persisted.namespaces['real:v2'].entries['expired-contact'], undefined);
 });
 
+test('initialization prunes expired persisted entries without waiting for a later write', async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'signalbase-cache-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, 'cache.json');
+  const now = 2_000;
+  await writeFile(filePath, JSON.stringify({
+    schemaVersion: 2,
+    namespaces: {
+      'real:v2': {
+        mode: 'real',
+        extractorVersion: 'v2',
+        entries: {
+          expired: {
+            storedAt: 1,
+            expiresAt: 10,
+            kind: 'positive',
+            schemaVersion: 2,
+            extractorVersion: 'v2',
+            mode: 'real',
+            value: { emails: ['fixture@example.com'], phones: [] },
+          },
+          current: {
+            storedAt: now,
+            expiresAt: now + 10_000,
+            kind: 'positive',
+            schemaVersion: 2,
+            extractorVersion: 'v2',
+            mode: 'real',
+            value: { success: true },
+          },
+        },
+      },
+    },
+  }), 'utf8');
+
+  const cache = new JsonCache(filePath, {
+    schemaVersion: 2,
+    extractorVersion: 'v2',
+    mode: 'real',
+    now: () => now,
+  });
+  await cache.initialize();
+
+  const persisted = JSON.parse(await readFile(filePath, 'utf8'));
+  assert.equal(persisted.namespaces['real:v2'].entries.expired, undefined);
+  assert.deepEqual(cache.get('current'), { success: true });
+});
+
 test('cache policy explicitly identifies network and cancellation as non-cacheable', () => {
   assert.equal(cachePolicyFor({ errorCode: 'network_error' }).cache, false);
   assert.equal(cachePolicyFor({ errorCode: 'request_cancelled' }).cache, false);

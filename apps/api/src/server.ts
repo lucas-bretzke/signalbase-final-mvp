@@ -156,6 +156,7 @@ export function buildServer(options: BuildServerOptions = {}) {
 function workerErrorHttpStatus(code: WorkerErrorCode): number {
   if (code === 'invalid_request') return 400;
   if (code === 'auth_required') return 401;
+  if (code === 'worker_unauthorized') return 401;
   if (code === 'challenge') return 409;
   if (code === 'queue_full') return 429;
   if (code === 'request_cancelled') return 499;
@@ -166,6 +167,7 @@ function workerErrorHttpStatus(code: WorkerErrorCode): number {
 
 function publicWorkerErrorMessage(code: WorkerErrorCode): string {
   if (code === 'auth_required') return 'A sessao autorizada do LinkedIn precisa de login.';
+  if (code === 'worker_unauthorized') return 'Token de acesso ao worker ausente ou invalido.';
   if (code === 'challenge') return 'O LinkedIn solicitou verificacao manual.';
   if (code === 'deadline_exceeded') return 'O prazo da operacao foi excedido.';
   if (code === 'request_cancelled') return 'A operacao foi cancelada.';

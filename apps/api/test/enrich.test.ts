@@ -118,7 +118,7 @@ describe('API MVP', () => {
         ok: true,
         worker: 'signalbase-final-mvp-linkedin-worker',
         implementation: 'puppeteer',
-        version: '3.1.0',
+        version: '3.2.0',
         enabled: true,
         mode: 'demo',
         ready: true,

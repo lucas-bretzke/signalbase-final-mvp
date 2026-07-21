@@ -280,7 +280,7 @@ Formato típico:
 | HTTP | Significado |
 | --- | --- |
 | `400` | payload ou query string inválida. |
-| `401` / `409` | login ou verificação manual necessários no worker. |
+| `401` / `409` | token do worker ausente/inválido, login do LinkedIn ou verificação manual necessários. |
 | `404` | busca/resultado não encontrado ou associação incorreta. |
 | `429` / `503` | backpressure, fila cheia/expirada ou worker indisponível. |
 | `499` / `504` | operação cancelada ou deadline excedido. |
@@ -291,7 +291,7 @@ Formato típico:
 podem normalizar indisponibilidade para `503`, mantendo `errorCode` no corpo. Quando disponível,
 `errorCode` preserva uma categoria estável: `auth_required`, `challenge`,
 `navigation_error`, `network_error`, `deadline_exceeded`, `request_cancelled`, `queue_timeout`,
-`queue_full`, `worker_unavailable`, `wrong_worker`, `invalid_request` ou um resultado funcional como
+`queue_full`, `worker_unauthorized`, `worker_unavailable`, `wrong_worker`, `invalid_request` ou um resultado funcional como
 `no_company_candidate`, `company_not_verified`, `no_verified_match` e `rejected_by_filters`. Falhas de infraestrutura
 não são convertidas em resultado funcional vazio.
 
@@ -320,6 +320,8 @@ Compatibilidade para teste, debug ou enriquecimento manual:
 Esse endpoint não cria `LeadSearch`, não consulta o universo por UF/CNAE e não garante uma quantidade de contatos válidos. Não o use como fluxo principal.
 
 ## API interna do worker
+
+A API principal envia `x-request-id`, `x-request-deadline` e, quando `WORKER_AUTH_TOKEN` está configurado, `Authorization: Bearer <token>`. O worker `3.2.0` aplica o deadline desde o início da requisição HTTP, inclusive leitura do body, e recusa modo real fora de loopback sem token compartilhado. A prontidão do worker considera a sessão autenticada apenas enquanto `WORKER_SESSION_FRESHNESS_MS` estiver vigente; criação/retomada de buscas LinkedIn dependentes fazem checagem ativa em modo real.
 
 ### `POST http://worker:8010/company/extract`
 

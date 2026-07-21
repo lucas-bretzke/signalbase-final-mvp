@@ -12,6 +12,7 @@ export const config = {
   mode: workerModeValue('LINKEDIN_WORKER_MODE', 'demo'),
   host: stringValue('WORKER_HOST', '127.0.0.1'),
   port: integerValue('WORKER_PORT', 8010, 1, 65_535),
+  authToken: optionalString('WORKER_AUTH_TOKEN'),
   headless: booleanValue('PUPPETEER_HEADLESS', true),
   executablePath: optionalString('PUPPETEER_EXECUTABLE_PATH') ?? installedBrowserPath(),
   profileDirectory: projectPath('LINKEDIN_BROWSER_PROFILE_DIR', 'data/linkedin-browser-profile'),
@@ -24,6 +25,9 @@ export const config = {
   minNavigationBudgetMs: integerValue('WORKER_MIN_NAVIGATION_BUDGET_MS', 5_000, 100, 60_000),
   queueWaitTimeoutMs: integerValue('WORKER_QUEUE_WAIT_TIMEOUT_MS', 30_000, 100, 300_000),
   maxQueueDepth: integerValue('WORKER_MAX_QUEUE_DEPTH', 8, 1, 100),
+  resourceCloseTimeoutMs: integerValue('WORKER_RESOURCE_CLOSE_TIMEOUT_MS', 5_000, 100, 60_000),
+  shutdownTimeoutMs: integerValue('WORKER_SHUTDOWN_TIMEOUT_MS', 10_000, 100, 120_000),
+  sessionFreshnessMs: integerValue('WORKER_SESSION_FRESHNESS_MS', 15 * 60 * 1_000, 1_000, 24 * 60 * 60 * 1_000),
   cacheTtlMs: integerValue('PUPPETEER_CACHE_TTL_HOURS', 168, 1, 720) * 60 * 60 * 1_000,
   negativeCacheTtlMs: integerValue('PUPPETEER_NEGATIVE_CACHE_TTL_MINUTES', 15, 1, 1_440) * 60 * 1_000,
   emptyCacheTtlMs: integerValue('PUPPETEER_EMPTY_CACHE_TTL_MINUTES', 15, 1, 1_440) * 60 * 1_000,
@@ -37,6 +41,10 @@ export const config = {
 
 if (config.maxOperationTimeoutMs < config.operationTimeoutMs) {
   throw new Error('WORKER_MAX_OPERATION_TIMEOUT_MS deve ser maior ou igual a WORKER_OPERATION_TIMEOUT_MS.');
+}
+
+if (config.enabled && config.mode === 'real' && !config.authToken && !isLoopbackHost(config.host)) {
+  throw new Error('WORKER_AUTH_TOKEN e obrigatorio quando LINKEDIN_WORKER_MODE=real e WORKER_HOST nao e loopback.');
 }
 
 function loadEnvironment(filePath) {
@@ -86,6 +94,14 @@ function integerValue(name, fallback, minimum, maximum = Number.MAX_SAFE_INTEGER
     throw new Error(`${name} invalido: informe um inteiro entre ${minimum} e ${maximum}.`);
   }
   return parsed;
+}
+
+function isLoopbackHost(host) {
+  const normalized = String(host ?? '').trim().toLowerCase();
+  return normalized === 'localhost'
+    || normalized === '127.0.0.1'
+    || normalized === '::1'
+    || normalized.startsWith('127.');
 }
 
 function installedBrowserPath() {

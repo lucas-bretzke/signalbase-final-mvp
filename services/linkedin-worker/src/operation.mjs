@@ -13,6 +13,7 @@ const ERROR_DETAILS = Object.freeze({
   challenge: { status: 409, message: 'O LinkedIn solicitou verificacao manual.' },
   navigation_error: { status: 502, message: 'A pagina nao pode ser carregada.' },
   worker_unavailable: { status: 503, message: 'O navegador do worker esta indisponivel.' },
+  worker_unauthorized: { status: 401, message: 'Token de acesso ao worker ausente ou invalido.' },
   invalid_request: { status: 400, message: 'A requisicao enviada ao worker e invalida.' },
 });
 
@@ -39,8 +40,10 @@ export class OperationContext {
   } = {}) {
     this.now = now;
     this.startedAt = now();
+    this.defaultTimeoutMs = defaultTimeoutMs;
+    this.maxTimeoutMs = maxTimeoutMs;
     this.requestId = normalizeRequestId(requestId);
-    this.deadline = normalizeDeadline(deadline, this.startedAt, defaultTimeoutMs, maxTimeoutMs);
+    this.deadline = normalizeDeadline(deadline, this.startedAt, this.defaultTimeoutMs, this.maxTimeoutMs);
     this.queueWaitMs = 0;
     this.stageDurations = new Map();
     this.controller = new AbortController();
@@ -56,13 +59,7 @@ export class OperationContext {
       else signal.addEventListener('abort', this.externalAbortListener, { once: true });
     }
 
-    const delayMs = Math.max(0, this.deadline - now());
-    if (!this.signal.aborted) {
-      this.deadlineTimer = setTimer(() => {
-        this.abort(new WorkerOperationError('deadline_exceeded'));
-      }, delayMs);
-      this.deadlineTimer?.unref?.();
-    }
+    this.scheduleDeadlineTimer();
   }
 
   elapsedMs() {
@@ -75,6 +72,15 @@ export class OperationContext {
 
   addQueueWait(durationMs) {
     this.queueWaitMs += Math.max(0, Math.trunc(durationMs));
+  }
+
+  setRequestId(value) {
+    this.requestId = normalizeRequestId(value);
+  }
+
+  setDeadline(value) {
+    this.deadline = normalizeDeadline(value, this.startedAt, this.defaultTimeoutMs, this.maxTimeoutMs);
+    this.scheduleDeadlineTimer();
   }
 
   async stage(name, action) {
@@ -124,6 +130,16 @@ export class OperationContext {
     if (this.externalSignal && this.externalAbortListener) {
       this.externalSignal.removeEventListener('abort', this.externalAbortListener);
     }
+  }
+
+  scheduleDeadlineTimer() {
+    if (this.deadlineTimer) this.clearTimer(this.deadlineTimer);
+    if (this.signal.aborted) return;
+    const delayMs = Math.max(0, this.deadline - this.now());
+    this.deadlineTimer = this.setTimer(() => {
+      this.abort(new WorkerOperationError('deadline_exceeded'));
+    }, delayMs);
+    this.deadlineTimer?.unref?.();
   }
 }
 
@@ -211,6 +227,7 @@ export class SerialOperationQueue {
     this.counters.lastQueueWaitMs = queueWaitMs;
     this.active = {
       operation: item.operation,
+      context: item.context,
       requestId: item.context.requestId,
       startedAt: this.now(),
     };
@@ -224,11 +241,12 @@ export class SerialOperationQueue {
       this.drain();
     };
 
-    Promise.resolve()
+    const taskPromise = Promise.resolve()
       .then(() => {
         item.context.throwIfUnavailable();
         return item.task({ queueWaitMs });
-      })
+      });
+    raceWithAbort(taskPromise, item.context)
       .then(
         (value) => {
           complete();
@@ -239,6 +257,7 @@ export class SerialOperationQueue {
           item.reject(error);
         },
       );
+    taskPromise.catch(() => undefined);
   }
 
   cleanupItem(item) {
@@ -260,15 +279,60 @@ export class SerialOperationQueue {
     };
   }
 
-  onIdle() {
+  cancelAll(reason = new WorkerOperationError('request_cancelled')) {
+    const error = asOperationError(reason, undefined, 'request_cancelled');
+    for (const item of [...this.pending]) this.removePending(item, error);
+    this.active?.context?.abort(error);
+  }
+
+  onIdle({ timeoutMs } = {}) {
     if (!this.active && this.pending.length === 0) return Promise.resolve();
-    return new Promise((resolve) => this.idleWaiters.push(resolve));
+    const waitMs = Number(timeoutMs);
+    return new Promise((resolve) => {
+      let timer;
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (timer) this.clearTimer(timer);
+        const index = this.idleWaiters.indexOf(finish);
+        if (index >= 0) this.idleWaiters.splice(index, 1);
+        resolve();
+      };
+      if (Number.isFinite(waitMs) && waitMs > 0) {
+        timer = this.setTimer(finish, Math.trunc(waitMs));
+        timer?.unref?.();
+      }
+      this.idleWaiters.push(finish);
+    });
   }
 
   resolveIdleIfNeeded() {
     if (this.active || this.pending.length) return;
     for (const resolve of this.idleWaiters.splice(0)) resolve();
   }
+}
+
+function raceWithAbort(promise, context) {
+  const signal = context?.signal;
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const finish = (action) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      action();
+    };
+    const onAbort = () => finish(() => reject(errorFromAbortSignal(signal)));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    );
+    if (signal.aborted) onAbort();
+  });
 }
 
 export function createOperationContext(options) {

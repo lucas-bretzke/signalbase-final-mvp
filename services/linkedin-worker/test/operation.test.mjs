@@ -50,6 +50,29 @@ test('a cancelled active item releases the serial queue for the next item', asyn
   secondContext.dispose();
 });
 
+test('an active task that ignores abort does not pin the serial queue', async () => {
+  const queue = new SerialOperationQueue({ maxDepth: 2, waitTimeoutMs: 500 });
+  const firstContext = createOperationContext({ deadline: Date.now() + 2_000 });
+  const secondContext = createOperationContext({ deadline: Date.now() + 2_000 });
+  let firstStarted;
+  const started = new Promise((resolve) => { firstStarted = resolve; });
+
+  const first = queue.enqueue(async () => {
+    firstStarted();
+    await new Promise(() => undefined);
+  }, { context: firstContext, operation: 'ignores_abort' });
+  await started;
+  const second = queue.enqueue(async () => 'released', { context: secondContext, operation: 'second' });
+
+  firstContext.abort();
+  await assert.rejects(first, (error) => error.code === 'request_cancelled');
+  assert.equal(await second, 'released');
+  assert.equal(queue.health().activeOperation, null);
+
+  firstContext.dispose();
+  secondContext.dispose();
+});
+
 test('queue applies max depth and a typed wait timeout', async () => {
   const queue = new SerialOperationQueue({ maxDepth: 1, waitTimeoutMs: 15 });
   const activeContext = createOperationContext({ deadline: Date.now() + 2_000 });

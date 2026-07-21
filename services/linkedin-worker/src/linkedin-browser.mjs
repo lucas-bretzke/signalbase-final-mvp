@@ -62,10 +62,14 @@ export class LinkedinBrowserWorker {
   health() {
     const queue = this.queue.health();
     const acceptingWork = queue.queueDepth < queue.maxQueueDepth;
+    const browserAvailable = this.options.mode === 'demo' || Boolean(this.options.executablePath) || Boolean(this.browser?.connected);
+    const freshSession = this.sessionState === 'authenticated'
+      && isFreshTimestamp(this.lastCheckedAt, this.options.sessionFreshnessMs, this.now);
     const ready = Boolean(this.options.enabled)
-      && (this.options.mode === 'demo' || (this.sessionState === 'authenticated' && acceptingWork));
+      && browserAvailable
+      && (this.options.mode === 'demo' || (freshSession && acceptingWork));
     return {
-      browser_available: true,
+      browser_available: browserAvailable,
       browser_connected: Boolean(this.browser?.connected),
       session_state: this.sessionState,
       last_error: this.lastError,
@@ -77,7 +81,15 @@ export class LinkedinBrowserWorker {
         ? undefined
         : !this.options.enabled
           ? 'disabled'
-          : !acceptingWork ? 'queue_full' : this.sessionState === 'challenge' ? 'challenge' : 'auth_required',
+          : !browserAvailable
+            ? 'worker_unavailable'
+            : !acceptingWork
+              ? 'queue_full'
+              : this.sessionState === 'challenge'
+                ? 'challenge'
+                : this.sessionState === 'authenticated'
+                  ? 'session_stale'
+                  : 'auth_required',
       headless: this.options.headless,
       queue: 'serial',
       queueDepth: queue.queueDepth,
@@ -393,7 +405,7 @@ export class LinkedinBrowserWorker {
           throw asOperationError(error, context);
         } finally {
           context.signal.removeEventListener('abort', closeOnAbort);
-          await page.close().catch(() => undefined);
+          await closeWithTimeout(page, this.options.resourceCloseTimeoutMs);
         }
       }, { context, operation: stage });
     } finally {
@@ -406,7 +418,7 @@ export class LinkedinBrowserWorker {
     context?.throwIfUnavailable();
     let browser;
     try {
-      await mkdir(this.options.profileDirectory, { recursive: true });
+      await mkdir(this.options.profileDirectory, { recursive: true, mode: 0o700 });
       browser = await waitForAbortableResource(
         () => this.launchBrowser({
           headless: this.options.headless,
@@ -463,8 +475,9 @@ export class LinkedinBrowserWorker {
   }
 
   async close() {
-    await this.queue.onIdle();
-    await this.browser?.close().catch(() => undefined);
+    this.queue.cancelAll(new WorkerOperationError('request_cancelled', 'Worker encerrando operacoes ativas.'));
+    await this.queue.onIdle({ timeoutMs: this.options.shutdownTimeoutMs });
+    await closeWithTimeout(this.browser, this.options.resourceCloseTimeoutMs);
     await this.cache.close();
   }
 
@@ -683,6 +696,31 @@ function closeResource(resource) {
   return resource?.close?.();
 }
 
+async function closeWithTimeout(resource, timeoutMs = 5_000) {
+  if (!resource?.close) return;
+  const waitMs = Math.max(1, Math.trunc(Number(timeoutMs) || 5_000));
+  let timer;
+  try {
+    await Promise.race([
+      Promise.resolve().then(() => resource.close()),
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, waitMs);
+        timer?.unref?.();
+      }),
+    ]);
+  } catch {
+    // Best effort: operation deadlines define the externally visible failure.
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function isTimeoutFailure(error) {
   return error?.name === 'TimeoutError' || /timed?\s*out|timeout/i.test(String(error?.message ?? ''));
+}
+
+function isFreshTimestamp(value, ttlMs, now = Date.now) {
+  const timestamp = Date.parse(String(value ?? ''));
+  if (!Number.isFinite(timestamp)) return false;
+  return Math.max(0, now() - timestamp) <= Math.max(1, Number(ttlMs) || 1);
 }

@@ -53,16 +53,16 @@ PUPPETEER_MAX_CONTACT_PROFILES=3
 Os diagnósticos locais mostraram:
 
 - API `2.1.0` disponível;
-- worker `3.1.0` disponível no modo `real`;
+- worker `3.2.0` disponível no modo `real`;
 - navegador conectado;
 - sessão do LinkedIn autenticada;
 - última operação registrada pelo worker: busca de decisores;
 - erro funcional mais recente no worker: nenhum decisor com vínculo atual comprovado;
-- busca de leads mais recente bloqueada após 50 candidatas, com `worker_unavailable` e `This operation was aborted`;
+- busca de leads analisada originalmente bloqueou após 50 candidatas, com erro de abort classificado como indisponibilidade;
 - cache contendo falhas do Bing como `ERR_HTTP2_PROTOCOL_ERROR`, `ERR_CONNECTION_CLOSED` e `Execution context was destroyed`;
 - vários resultados `no_verified_match` na busca de decisores.
 
-Conclusão do snapshot: **o worker e a autenticação estão funcionando**, mas o pipeline ainda falha em navegação/resolução e em extrair decisores verificáveis. O abort da busca é compatível com o timeout HTTP da API enquanto uma operação longa continua serializada no worker. Além disso, a busca observada exigia simultaneamente e-mail, telefone, celular, contato não genérico e match sócio–decisor; portanto, “zero leads válidos” não significa necessariamente “zero páginas raspadas”.
+Conclusão do snapshot: **o worker e a autenticação estavam funcionando**, mas o pipeline falhava em navegação/resolução e em extrair decisores verificáveis. A versão atual aplica deadline e cancelamento ponta a ponta, libera a fila em abort/deadline e diferencia backpressure de indisponibilidade. Além disso, a busca observada exigia simultaneamente e-mail, telefone, celular, contato não genérico e match sócio–decisor; portanto, “zero leads válidos” não significa necessariamente “zero páginas raspadas”.
 
 ## 3. Componentes e responsabilidades
 
@@ -133,7 +133,7 @@ O script `scripts/run-worker.mjs` verifica a porta do worker antes de iniciar ou
 
 - identidade `signalbase-final-mvp-linkedin-worker`;
 - implementação `puppeteer`;
-- versão `3.1.0`;
+- versão `3.2.0`;
 - mesmo modo configurado na API.
 
 Se a porta estiver ocupada por outro processo, por uma versão antiga ou por um worker em outro modo, o boot falha explicitamente.
@@ -362,9 +362,13 @@ Toda página relevante é classificada por `pageState`.
 | `navigation_error` | página sem conteúdo visível ou falha de navegação | não é tratado como bloqueio global pela API atual |
 | `no_verified_match` | página abriu, mas não gerou evidência suficiente | candidata continua como não validada |
 | `wrong_worker` | identidade, versão ou modo divergentes | bloqueia a busca |
-| `worker_unavailable` | conexão, parse, abort ou timeout HTTP | bloqueia a busca |
+| `worker_unauthorized` | token do worker ausente ou inválido | bloqueia a busca |
+| `worker_unavailable` | conexão, parse ou navegador indisponível | bloqueia a busca |
+| `deadline_exceeded` | orçamento absoluto da operação esgotado | bloqueia a busca |
+| `request_cancelled` | cliente/API cancelou a operação | bloqueia a busca |
+| `queue_timeout` / `queue_full` | backpressure da fila serial | bloqueia a busca |
 
-Erros bloqueantes na API são: `auth_required`, `challenge`, `wrong_worker` e `worker_unavailable`. Quando um deles sobe até o `LeadSearchService`, a busca vira `blocked`, preservando a candidata atual para retomada.
+Erros bloqueantes na API incluem autenticação, challenge, worker incorreto, worker indisponível, autorização do worker, deadline, cancelamento e backpressure. Quando um deles sobe até o `LeadSearchService`, a busca vira `blocked`, preservando a candidata atual para retomada.
 
 ## 12. Busca de decisores
 
@@ -550,15 +554,23 @@ Há chaves separadas para:
 
 O cache usa SHA-256 do payload e grava de modo serializado por arquivo temporário + rename. Respostas devolvidas do cache recebem `cached=true` quando o método adiciona esse marcador.
 
+O arquivo é escrito com permissão restrita quando o sistema operacional permite, entradas expiradas são podadas no carregamento e uma falha de rename remove o temporário antes de propagar o erro.
+
 Não são cacheados resultados cujo `errorCode` seja:
 
 - `auth_required`;
 - `challenge`;
 - `navigation_error`;
+- `network_error`;
+- `deadline_exceeded`;
+- `request_cancelled`;
+- `queue_timeout`;
+- `queue_full`;
 - `worker_unavailable`;
+- `worker_unauthorized`;
 - `wrong_worker`.
 
-Limitação atual: `no_verified_match`, resoluções negativas sem `errorCode` e contatos vazios podem permanecer cacheados por sete dias. Assim, corrigir a sessão, seletor ou página não garante uma nova tentativa enquanto a chave continuar válida.
+Resultados negativos (`no_verified_match`, `no_company_candidate`, `company_not_verified`, `success=false`) e contatos vazios usam TTL curto configurável por `PUPPETEER_NEGATIVE_CACHE_TTL_MINUTES` e `PUPPETEER_EMPTY_CACHE_TTL_MINUTES`, ambos com padrão de 15 minutos. Sucessos verificados continuam usando `PUPPETEER_CACHE_TTL_HOURS`.
 
 ## 16. Concorrência, serialização e timeouts
 
@@ -566,7 +578,9 @@ A API possui:
 
 - `ENRICH_CONCURRENCY`, usado por `/api/enrich` em lotes;
 - `WORKER_CONCURRENCY`, limitador de chamadas do enriquecimento;
-- `REQUEST_TIMEOUT_MS`, timeout de cada chamada HTTP ao worker, padrão 120 segundos.
+- `REQUEST_TIMEOUT_MS`, orçamento HTTP de cada chamada ao worker, padrão 120 segundos;
+- `LEAD_OPERATION_TIMEOUT_MS`, orçamento da candidata completa;
+- `WORKER_OPERATION_TIMEOUT_MS` e `WORKER_MAX_OPERATION_TIMEOUT_MS`, orçamento padrão e teto aceito pelo worker.
 
 Independentemente desses valores, o worker mantém uma única fila global:
 
@@ -576,9 +590,9 @@ queue: serial
 
 Cada `withPage` aguarda o anterior, abre uma aba nova, executa a tarefa e fecha a aba. Navegações respeitam intervalo mínimo global de `PUPPETEER_MIN_DELAY_MS`.
 
-Uma resolução pode executar até cinco pesquisas externas, duas buscas internas e três extrações de Company Page. Com timeout de navegação de 45 segundos, uma única requisição `/company/resolve` pode ultrapassar os 120 segundos da API em cenário de rede instável.
+Uma resolução pode executar pesquisas externas, buscas internas e extrações de Company Page. Antes de cada navegação, o worker exige margem mínima restante por `WORKER_MIN_NAVIGATION_BUDGET_MS`; se o orçamento não comporta a próxima etapa, a operação falha de forma tipada com `deadline_exceeded`.
 
-Quando a API aborta, `workerClient.postJson` converte o abort em `worker_unavailable`, bloqueando a busca. O worker HTTP não observa o cancelamento do cliente e pode continuar navegando, mantendo a fila ocupada. Esse comportamento é uma explicação provável para o abort observado no estado atual.
+O deadline absoluto é enviado em header e body, mas o worker aplica o orçamento desde o início da requisição HTTP, inclusive leitura do body. Desconexão do cliente, pausa/exclusão de busca e estouro de deadline abortam o contexto ativo. A fila libera o próximo item mesmo que uma chamada interna ignore o abort; páginas, navegador e shutdown têm fechamento limitado por timeout.
 
 ## 17. Diagnóstico e saúde
 
@@ -598,9 +612,10 @@ Campos importantes:
 - `last_error`;
 - `last_success_at`;
 - `headless`;
-- `profile_directory`.
+- `readiness_reason`;
+- métricas de fila (`queueDepth`, `activeOperation`, `queueMetrics`).
 
-`/health` não navega até o LinkedIn. Ele mostra o último estado observado. Portanto, `ready=true` pode ficar desatualizado após a sessão expirar.
+`/health` não navega até o LinkedIn. Ele mostra o último estado observado, mas `ready=true` só permanece enquanto a sessão autenticada estiver dentro de `WORKER_SESSION_FRESHNESS_MS`. Se a janela expirar, o worker informa `readiness_reason=session_stale` até uma checagem ativa bem-sucedida.
 
 ### 17.2 Teste ativo da sessão
 
@@ -640,22 +655,16 @@ Uma busca bloqueada só pode ser retomada pela API depois de um teste de sessão
 POST /api/lead-searches/<id>/resume
 ```
 
-No caso de `worker_unavailable` por timeout, o teste de sessão pode passar mesmo que a causa real — operação longa ou fila ocupada — continue presente.
+No caso de `queue_full`, `queue_timeout`, `deadline_exceeded` ou `worker_unavailable`, o teste de sessão pode passar mesmo que a causa real esteja em backpressure, rede ou navegador. Por isso a retomada também preserva o erro da candidata bloqueada para investigação.
 
-## 18. Pontos frágeis do desenho atual
+## 18. Pontos de atenção operacional
 
-1. **Dependência do Bing.** Erros HTTP/2, conexão fechada, consentimento ou mudança de DOM reduzem a capacidade de encontrar Company Pages.
-2. **Seletores do LinkedIn.** O worker usa HTML/texto visível e seletores genéricos. Mudanças de layout, idioma ou carregamento virtual podem produzir página aberta sem dados úteis.
-3. **Fila única.** Uma navegação lenta atrasa todas as outras operações e todas as buscas atendidas pelo mesmo worker.
-4. **Timeout desalinhado.** O pior caso de `/company/resolve` pode ser maior que `REQUEST_TIMEOUT_MS`.
-5. **Cancelamento incompleto.** O abort da API não cancela o trabalho já iniciado no worker.
-6. **Cache negativo longo.** `no_verified_match` e contatos vazios podem ficar sete dias sem nova tentativa.
-7. **Contatos pouco disponíveis.** O overlay depende do que o LinkedIn revela para a conta autenticada; e-mail e telefone geralmente não são públicos.
-8. **Saúde passiva.** `/health` não confirma a sessão ao vivo.
-9. **Capability permissiva.** A API marca a qualidade `muito_alto` como disponível quando identidade e modo do worker coincidem, mesmo se `worker.ready` for falso.
-10. **Docker e perfil local separados.** Login feito no host não autentica automaticamente o volume do container.
-11. **Browser disponível não é testado no boot.** `browser_available=true` é informado antes de uma tentativa real de iniciar o executável.
-12. **Erro de decisores pode ser suavizado.** Alguns bloqueios detectados dentro da busca de pessoas viram lista vazia e terminam como `no_verified_match`, em vez de interromper imediatamente a busca.
+1. **Dependência de fontes externas.** Bing, LinkedIn, rede e layout das páginas podem mudar ou impor limites próprios; falhas transitórias são tipadas e não são cacheadas.
+2. **Fila única intencional.** O navegador continua serial para reduzir disputa por sessão/perfil. Backpressure é explícito por `queue_full` e `queue_timeout`.
+3. **Sessão controlada pelo operador.** Login, challenge e expiração exigem ação humana; readiness stale bloqueia fluxo real até checagem ativa.
+4. **Disponibilidade de contatos.** O overlay depende do que o LinkedIn revela para a conta autenticada; e-mail e telefone geralmente não são públicos.
+5. **Docker e perfil local separados.** Login feito no host não autentica automaticamente o volume do container.
+6. **Filtros cumulativos.** Exigir e-mail, telefone, celular, match e contato de decisor pode rejeitar empresas raspadas corretamente por ausência de dados suficientes.
 
 ## 19. Como interpretar “não está funcionando”
 
@@ -684,8 +693,8 @@ empresa é extraída, mas não há decisores
 decisor existe, mas lead é rejeitado
   -> faltou contato, celular, e-mail aceito, match de nome, score ou qualidade mínima
 
-busca vira blocked com worker_unavailable / aborted
-  -> timeout HTTP, worker reiniciado, conexão perdida ou fila/navegação longa
+busca vira blocked com worker_unavailable / deadline_exceeded / queue_timeout
+  -> navegador indisponível, rede, orçamento esgotado ou backpressure
 ```
 
 ## 20. Sequência recomendada para investigar o estado atual
@@ -694,7 +703,7 @@ busca vira blocked com worker_unavailable / aborted
 2. Executar `/api/linkedin/test`; não confiar apenas em `session_state` antigo.
 3. Parar o worker e executar o smoke com uma Company Page conhecida.
 4. Observar separadamente os estágios `session`, `company` e `decision_makers`.
-5. Verificar se os aborts ocorrem perto de `REQUEST_TIMEOUT_MS`.
+5. Verificar `errorCode`, `timing.remainingMs`, `queueWaitMs` e se a falha ocorreu por deadline ou fila.
 6. Comparar erros de Bing com o fallback da busca interna do LinkedIn.
 7. Inspecionar entradas `resolve`, `company` e `people` do cache sem expor cookies ou dados pessoais.
 8. Durante a correção, usar uma busca pequena e filtros menos cumulativos para não confundir raspagem com rejeição de qualidade.
@@ -728,6 +737,7 @@ busca vira blocked com worker_unavailable / aborted
 | `WORKER_URL` | `http://127.0.0.1:8010` | endereço usado pela API |
 | `WORKER_HOST` | `127.0.0.1` | bind do worker |
 | `WORKER_PORT` | `8010` | porta do worker |
+| `WORKER_AUTH_TOKEN` | vazio | token API -> worker; obrigatório no modo real fora de loopback |
 | `LINKEDIN_BROWSER_PROFILE_DIR` | `data/linkedin-browser-profile` | sessão persistente |
 | `LINKEDIN_CACHE_PATH` | `data/linkedin-browser-cache.json` | cache do scraper |
 | `PUPPETEER_HEADLESS` | `true` | navegador oculto/visível |
@@ -735,12 +745,22 @@ busca vira blocked com worker_unavailable / aborted
 | `PUPPETEER_NAVIGATION_TIMEOUT_MS` | `45000` | timeout de cada navegação |
 | `PUPPETEER_MIN_DELAY_MS` | `1500` | intervalo mínimo global entre navegações |
 | `PUPPETEER_CACHE_TTL_HOURS` | `168` | validade do cache |
+| `PUPPETEER_NEGATIVE_CACHE_TTL_MINUTES` | `15` | TTL curto de resultados negativos |
+| `PUPPETEER_EMPTY_CACHE_TTL_MINUTES` | `15` | TTL curto de contatos vazios |
 | `PUPPETEER_MAX_COMPANY_CANDIDATES` | `3` | páginas candidatas validadas |
 | `PUPPETEER_MAX_PEOPLE_SEARCHES` | `8` | termos pesquisados por empresa |
 | `PUPPETEER_EXTRACT_PROFILE_CONTACTS` | `true` | abre o overlay de contato |
 | `PUPPETEER_MAX_CONTACT_PROFILES` | `3` | perfis com contato consultado |
 | `REQUEST_TIMEOUT_MS` | `120000` | timeout HTTP API → worker |
-| `WORKER_CONCURRENCY` | `2` | limite da API; o worker continua serial |
+| `WORKER_OPERATION_TIMEOUT_MS` | `110000` | orçamento padrão do worker |
+| `WORKER_MAX_OPERATION_TIMEOUT_MS` | `300000` | maior deadline aceito pelo worker |
+| `WORKER_MIN_NAVIGATION_BUDGET_MS` | `5000` | margem antes de iniciar navegação |
+| `WORKER_QUEUE_WAIT_TIMEOUT_MS` | `30000` | espera máxima na fila serial |
+| `WORKER_MAX_QUEUE_DEPTH` | `8` | profundidade máxima da fila serial |
+| `WORKER_RESOURCE_CLOSE_TIMEOUT_MS` | `5000` | limite para fechar página/navegador |
+| `WORKER_SHUTDOWN_TIMEOUT_MS` | `10000` | limite de espera no encerramento |
+| `WORKER_SESSION_FRESHNESS_MS` | `900000` | janela de readiness da sessão |
+| `WORKER_CONCURRENCY` | `1` | limite da API; o worker continua serial |
 | `LEAD_SEARCH_BATCH_SIZE` | `25` | candidatas lidas por lote |
 
 ## 23. Segurança, conformidade e limites
@@ -749,7 +769,7 @@ busca vira blocked com worker_unavailable / aborted
 - O cache e os resultados podem conter dados pessoais e exigem retenção, acesso e descarte compatíveis com a LGPD.
 - O operador é responsável pela autorização de uso, pelos termos do LinkedIn e pela base legal do tratamento.
 - O worker não deve tentar contornar CAPTCHA, checkpoint, bloqueio ou controle de acesso.
-- Em produção, o worker não deve ficar exposto publicamente. O servidor permite CORS amplo e, no Compose, a porta é publicada no host.
+- Em produção, o worker não deve ficar exposto publicamente. Ele não habilita CORS para chamadas do navegador e exige `WORKER_AUTH_TOKEN` quando o modo real escuta fora de loopback.
 - E-mail ou telefone encontrado tecnicamente não implica consentimento para contato.
 
 ## 24. Critério de sucesso ponta a ponta

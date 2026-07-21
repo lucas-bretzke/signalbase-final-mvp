@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const CURRENT_SCHEMA_VERSION = 2;
@@ -57,6 +57,7 @@ export class JsonCache {
     }
 
     this.loadNamespace();
+    if (this.pruneExpired() > 0) await this.flush();
   }
 
   get(key) {
@@ -105,10 +106,16 @@ export class JsonCache {
       extractorVersion: this.extractorVersion,
       entries: Object.fromEntries(this.entries),
     };
-    await mkdir(path.dirname(this.storagePath), { recursive: true });
+    await mkdir(path.dirname(this.storagePath), { recursive: true, mode: 0o700 });
     const temporary = `${this.storagePath}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(temporary, JSON.stringify(this.document, null, 2), 'utf8');
-    await rename(temporary, this.storagePath);
+    try {
+      await writeFile(temporary, JSON.stringify(this.document, null, 2), { encoding: 'utf8', mode: 0o600 });
+      await rename(temporary, this.storagePath);
+      await chmod(this.storagePath, 0o600).catch(() => undefined);
+    } catch (error) {
+      await rm(temporary, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   async loadCompatibleSidecar() {
@@ -130,15 +137,23 @@ export class JsonCache {
 
   pruneExpired() {
     const now = this.now();
+    let removed = 0;
     for (const [key, entry] of this.entries) {
-      if (!isCompatibleEntry(entry, this) || now >= entry.expiresAt) this.entries.delete(key);
+      if (!isCompatibleEntry(entry, this) || now >= entry.expiresAt) {
+        this.entries.delete(key);
+        removed += 1;
+      }
     }
     for (const namespace of Object.values(this.document.namespaces ?? {})) {
       if (!namespace?.entries || typeof namespace.entries !== 'object') continue;
       for (const [key, entry] of Object.entries(namespace.entries)) {
-        if (Number.isFinite(entry?.expiresAt) && now >= entry.expiresAt) delete namespace.entries[key];
+        if (Number.isFinite(entry?.expiresAt) && now >= entry.expiresAt) {
+          delete namespace.entries[key];
+          removed += 1;
+        }
       }
     }
+    return removed;
   }
 }
 

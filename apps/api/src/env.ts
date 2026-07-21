@@ -64,6 +64,7 @@ export const env = {
   host: process.env.HOST ?? '0.0.0.0',
   apiCorsOrigins: originList(process.env.API_CORS_ORIGINS),
   workerUrl: process.env.WORKER_URL ?? 'http://127.0.0.1:8010',
+  workerAuthToken: process.env.WORKER_AUTH_TOKEN?.trim() || undefined,
   linkedinEnabled,
   searchProvider: linkedinEnabled ? (workerMode === 'demo' ? 'demo' : 'puppeteer') : 'disabled',
   brasilApiEnabled: booleanValue(process.env.BRASILAPI_ENABLED, false),

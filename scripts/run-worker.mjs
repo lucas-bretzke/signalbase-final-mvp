@@ -30,8 +30,9 @@ function readEnvFile(path) {
 
 const rootEnv = readEnvFile(join(root, '.env'));
 const workerPort = rootEnv.WORKER_PORT ?? '8010';
+const workerAuthToken = rootEnv.WORKER_AUTH_TOKEN?.trim();
 const expectedMode = String(rootEnv.LINKEDIN_WORKER_MODE ?? 'demo').toLowerCase();
-const expectedVersion = '3.1.0';
+const expectedVersion = '3.2.0';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,6 +41,7 @@ function sleep(ms) {
 async function workerProbe(port) {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/health`, {
+      headers: workerAuthToken ? { authorization: `Bearer ${workerAuthToken}` } : undefined,
       signal: AbortSignal.timeout(1000),
     });
     const body = await response.json();

@@ -12,16 +12,20 @@ const NOW = 1_800_000_000_000;
 
 describe('worker client deadlines and cancellation', () => {
   let linkedinEnabled: boolean;
+  let workerAuthToken: string | undefined;
 
   beforeEach(() => {
     linkedinEnabled = env.linkedinEnabled;
+    workerAuthToken = env.workerAuthToken;
     env.linkedinEnabled = true;
+    env.workerAuthToken = undefined;
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
   });
 
   afterEach(() => {
     env.linkedinEnabled = linkedinEnabled;
+    env.workerAuthToken = workerAuthToken;
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -122,6 +126,41 @@ describe('worker client deadlines and cancellation', () => {
     });
     expect(remove).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('sends the worker auth token only as an Authorization header when configured', async () => {
+    env.workerAuthToken = 'test-worker-secret';
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      success: true,
+      linkedin_url: 'https://www.linkedin.com/company/empresa-teste',
+      confidence: 95,
+      provider: 'test',
+      reason: 'verified',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await resolveCompanyPage(COMPANY_INPUT, {
+      requestId: 'auth-header-test',
+      deadline: NOW + 5_000,
+    });
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.headers).toMatchObject({ authorization: 'Bearer test-worker-secret' });
+    expect(String(init.body)).not.toContain('test-worker-secret');
+  });
+
+  it('preserves worker authorization failures as a typed configuration error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+      errorCode: 'worker_unauthorized',
+      error: 'Token de acesso ao worker ausente ou invalido.',
+    }, 401)));
+
+    const error = await rejectedError(resolveCompanyPage(COMPANY_INPUT, {
+      requestId: 'worker-auth-failed',
+      deadline: NOW + 1_000,
+    }));
+
+    expect(error).toMatchObject({ code: 'worker_unauthorized', requestId: 'worker-auth-failed' });
   });
 
   it('rejects an invalid absolute deadline before calling fetch', async () => {

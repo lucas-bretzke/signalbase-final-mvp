@@ -25,7 +25,9 @@ function registerPrefix(app: FastifyInstance, service: LeadSearchService, prefix
       });
     }
     if (needsLinkedinReady) {
-      const diagnostic = await workerHealth({ requestId: request.id });
+      const diagnostic = env.workerMode === 'demo'
+        ? await workerHealth({ requestId: request.id })
+        : await testLinkedinSession({ requestId: request.id });
       if (diagnostic.ready !== true) {
         return reply.status(503).send({
           ok: false,

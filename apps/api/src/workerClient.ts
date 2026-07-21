@@ -21,6 +21,7 @@ const INTERRUPTING_CODES = new Set<WorkerErrorCode>([
   'request_cancelled',
   'queue_timeout',
   'queue_full',
+  'worker_unauthorized',
 ]);
 const WORKER_ERROR_CODES = new Set<WorkerErrorCode>([
   'auth_required',
@@ -33,6 +34,7 @@ const WORKER_ERROR_CODES = new Set<WorkerErrorCode>([
   'request_cancelled',
   'queue_timeout',
   'queue_full',
+  'worker_unauthorized',
   'invalid_request',
   'no_verified_match',
   'no_company_candidate',
@@ -41,7 +43,7 @@ const WORKER_ERROR_CODES = new Set<WorkerErrorCode>([
   'contact_not_available',
   'rejected_by_filters',
 ]);
-const EXPECTED_WORKER_VERSION = '3.1.0';
+const EXPECTED_WORKER_VERSION = '3.2.0';
 
 interface WorkerClientErrorOptions {
   cause?: unknown;
@@ -313,11 +315,13 @@ function errorCodeOf(error: unknown): WorkerErrorCode | undefined {
 }
 
 function requestHeaders(budget: TimeBudget): Record<string, string> {
-  return {
+  const headers: Record<string, string> = {
     'content-type': 'application/json',
     'x-request-id': budget.requestId,
     'x-request-deadline': String(budget.deadline),
   };
+  if (env.workerAuthToken) headers.authorization = `Bearer ${env.workerAuthToken}`;
+  return headers;
 }
 
 function withRequestMetadata(body: unknown, budget: TimeBudget): unknown {
@@ -381,6 +385,7 @@ function workerErrorCode(value: unknown): WorkerErrorCode | undefined {
 function statusErrorCode(status: number): WorkerErrorCode {
   if (status === 408 || status === 504) return 'deadline_exceeded';
   if (status === 499) return 'request_cancelled';
+  if (status === 401) return 'worker_unauthorized';
   if (status === 429) return 'queue_full';
   return 'worker_unavailable';
 }

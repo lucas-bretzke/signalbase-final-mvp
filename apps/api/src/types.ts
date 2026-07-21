@@ -52,6 +52,7 @@ export type WorkerErrorCode =
   | 'request_cancelled'
   | 'queue_timeout'
   | 'queue_full'
+  | 'worker_unauthorized'
   | 'invalid_request'
   | 'no_verified_match'
   | 'no_company_candidate'

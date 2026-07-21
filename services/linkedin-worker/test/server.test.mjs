@@ -55,6 +55,49 @@ function post(port, route, body, headers = {}) {
   });
 }
 
+function postRaw(port, route, body, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      host: '127.0.0.1',
+      port,
+      path: route,
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve({
+        status: response.statusCode,
+        headers: response.headers,
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+      }));
+    });
+    request.on('error', reject);
+    request.end(body);
+  });
+}
+
+function get(port, route, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      host: '127.0.0.1',
+      port,
+      path: route,
+      method: 'GET',
+      headers,
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve({
+        status: response.statusCode,
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+      }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
 test('accepts request metadata without passing it into cache-affecting worker payloads', async (t) => {
   let received;
   const worker = fakeWorker({
@@ -99,6 +142,35 @@ test('rejects a JSON payload that is not an object', async (t) => {
   const response = await post(port, '/company/resolve', null);
   assert.equal(response.status, 400);
   assert.equal(response.body.errorCode, 'invalid_request');
+});
+
+test('applies the request deadline before parsing the JSON body', async (t) => {
+  const server = createWorkerServer({ worker: fakeWorker(), options, logger: () => undefined });
+  const port = await listen(server);
+  t.after(() => close(server));
+  const response = await postRaw(port, '/company/resolve', '{', {
+    'x-request-deadline': String(Date.now() - 1),
+  });
+  assert.equal(response.status, 504);
+  assert.equal(response.body.errorCode, 'deadline_exceeded');
+});
+
+test('protects worker routes when an auth token is configured', async (t) => {
+  const server = createWorkerServer({
+    worker: fakeWorker(),
+    options: { ...options, authToken: 'secret-token' },
+    logger: () => undefined,
+  });
+  const port = await listen(server);
+  t.after(() => close(server));
+
+  const unauthorized = await get(port, '/health');
+  assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorized.body.errorCode, 'worker_unauthorized');
+
+  const authorized = await get(port, '/health', { authorization: 'Bearer secret-token' });
+  assert.equal(authorized.status, 200);
+  assert.equal(authorized.body.version, '3.2.0');
 });
 
 test('a disconnected HTTP client cancels the in-flight worker context', async (t) => {

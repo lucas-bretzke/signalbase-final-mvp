@@ -109,7 +109,7 @@ O projeto não usa API paga de busca. O Puppeteer pesquisa a Company Page, abre 
 npm run linkedin:login
 ```
 
-Faça login na janela aberta e pressione Enter no terminal quando o feed estiver visível. Depois configure `LINKEDIN_ENABLED=true`, `LINKEDIN_WORKER_MODE=real` e inicie `npm run dev`. O perfil e o cache ficam em `data/`, fora do Git.
+Faça login na janela aberta e pressione Enter no terminal quando o feed estiver visível. Depois configure `LINKEDIN_ENABLED=true`, `LINKEDIN_WORKER_MODE=real` e inicie `npm run dev`. O perfil e o cache ficam em `data/`, fora do Git. Se o worker real escutar fora de loopback, defina também `WORKER_AUTH_TOKEN` com um segredo longo; a API envia esse token somente no header `Authorization`.
 
 Para validar uma empresa isoladamente com o Chrome visível, pare o worker em execução e use:
 
@@ -134,7 +134,7 @@ RECEITA_SQLITE_HOST_PATH=D:/cnpj_ativo_final.db
 docker compose up --build
 ```
 
-A aplicação fica em `http://localhost:3000` e o worker em `http://localhost:8010`. Dentro do container, `RECEITA_SQLITE_PATH` já aponta para `/data/receita/cnpj.db`; o JSON operacional é guardado no volume separado `signalbase-final-mvp-data`.
+A aplicação fica em `http://localhost:3000` e o worker em `http://localhost:8010`. Dentro do container, `RECEITA_SQLITE_PATH` já aponta para `/data/receita/cnpj.db`; o JSON operacional é guardado no volume separado `signalbase-final-mvp-data`. Para `LINKEDIN_WORKER_MODE=real` no Compose, configure `WORKER_AUTH_TOKEN` no `.env`, porque o worker escuta em `0.0.0.0` dentro da rede Docker.
 
 Para usar outro arquivo no host, altere apenas o bind:
 
@@ -184,10 +184,13 @@ Quando o índice composto ainda não existe, a criação responde sem uma varred
 | `LINKEDIN_ENABLED` | Liga ou desliga completamente o cruzamento e a disponibilidade de `muito alto`. |
 | `LINKEDIN_WORKER_MODE` | `demo` ou `real`. |
 | `WORKER_URL` | URL interna/externa do worker Puppeteer. |
+| `WORKER_AUTH_TOKEN` | Token compartilhado API -> worker; obrigatório quando o worker real escuta fora de loopback. |
 | `REQUEST_TIMEOUT_MS` / `LEAD_OPERATION_TIMEOUT_MS` | Orçamentos da chamada HTTP e da candidata completa; defaults de 120.000 ms. |
 | `WORKER_OPERATION_TIMEOUT_MS` / `WORKER_MAX_OPERATION_TIMEOUT_MS` | Deadline padrão (110.000 ms) e teto aceito (300.000 ms) pelo worker. |
 | `WORKER_MIN_NAVIGATION_BUDGET_MS` | Margem mínima restante antes de iniciar outra navegação; padrão de 5.000 ms. |
 | `WORKER_QUEUE_WAIT_TIMEOUT_MS` / `WORKER_MAX_QUEUE_DEPTH` | Espera máxima e backpressure da fila serial; defaults de 30.000 ms e 8 itens. |
+| `WORKER_RESOURCE_CLOSE_TIMEOUT_MS` / `WORKER_SHUTDOWN_TIMEOUT_MS` | Limites para fechamento de página/navegador e encerramento do worker. |
+| `WORKER_SESSION_FRESHNESS_MS` | Janela máxima para considerar uma sessão autenticada ainda pronta; default de 15 minutos. |
 | `LINKEDIN_BROWSER_PROFILE_DIR` | Diretório persistente da sessão do navegador. |
 | `LINKEDIN_CACHE_PATH` | Cache de páginas, perfis e decisões já pesquisadas. |
 | `PUPPETEER_CACHE_TTL_HOURS` | TTL de sucessos verificados; padrão de 168 horas. |
@@ -196,7 +199,7 @@ Quando o índice composto ainda não existe, a criação responde sem uma varred
 | `MAX_BATCH_SIZE` | Proteção de tamanho de lote do enriquecimento interno. |
 | `ENRICH_CONCURRENCY` / `WORKER_CONCURRENCY` | Limites de paralelismo; o acesso ao navegador permanece serial e o default conservador da API é 1. |
 
-No Docker Compose, a porta do worker é publicada apenas em `127.0.0.1`; a API continua acessando-o pela rede interna em `http://worker:8010`. O worker não habilita CORS para chamadas diretas do navegador.
+No Docker Compose, a porta do worker é publicada apenas em `127.0.0.1`; a API continua acessando-o pela rede interna em `http://worker:8010`. O worker não habilita CORS para chamadas diretas do navegador e, no modo real fora de loopback, recusa inicialização sem `WORKER_AUTH_TOKEN`.
 
 Veja todas as opções em [.env.example](./.env.example).
 

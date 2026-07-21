@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
@@ -8,11 +9,12 @@ import {
   WorkerOperationError,
   asOperationError,
   createOperationContext,
+  errorFromAbortSignal,
   sanitizeRequestId,
   statusForError,
 } from './operation.mjs';
 
-export const WORKER_VERSION = '3.1.0';
+export const WORKER_VERSION = '3.2.0';
 
 export function createWorkerServer({
   worker = new LinkedinBrowserWorker(config),
@@ -37,6 +39,11 @@ export function createWorkerServer({
     let errorCode;
 
     try {
+      response.setHeader('x-request-id', requestId);
+      if (!isAuthorized(request, options)) {
+        throw new WorkerOperationError('worker_unauthorized');
+      }
+
       if (request.method === 'GET' && request.url === '/health') {
         return send(response, 200, {
           ok: true,
@@ -51,6 +58,14 @@ export function createWorkerServer({
         });
       }
 
+      context = createOperationContext({
+        requestId,
+        deadline: request.headers['x-request-deadline'],
+        signal: cancellation.signal,
+        defaultTimeoutMs: options.operationTimeoutMs,
+        maxTimeoutMs: options.maxOperationTimeoutMs,
+      });
+
       if (!options.enabled) {
         status = 503;
         return send(response, status, {
@@ -60,19 +75,17 @@ export function createWorkerServer({
         });
       }
 
-      const body = await readJson(request);
+      const body = await readJson(request, context);
       if (!body || typeof body !== 'object' || Array.isArray(body)) {
         throw new WorkerOperationError('invalid_request', 'O payload JSON deve ser um objeto.');
       }
-      requestId = sanitizeRequestId(request.headers['x-request-id'] ?? body.request_id ?? body.requestId);
-      const deadline = request.headers['x-request-deadline'] ?? body.deadline;
-      context = createOperationContext({
-        requestId,
-        deadline,
-        signal: cancellation.signal,
-        defaultTimeoutMs: options.operationTimeoutMs,
-        maxTimeoutMs: options.maxOperationTimeoutMs,
-      });
+      if (!request.headers['x-request-id'] && (body.request_id ?? body.requestId)) {
+        context.setRequestId(body.request_id ?? body.requestId);
+        requestId = context.requestId;
+      }
+      if (!request.headers['x-request-deadline'] && body.deadline !== undefined) {
+        context.setDeadline(body.deadline);
+      }
       response.setHeader('x-request-id', requestId);
       context.throwIfUnavailable();
       const payload = withoutOperationMetadata(body);
@@ -189,17 +202,62 @@ function canWrite(response) {
   return !response.destroyed && !response.writableEnded && response.writable !== false;
 }
 
-async function readJson(request) {
+async function readJson(request, context) {
   if (request.method === 'GET') return {};
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of request) {
-    size += chunk.length;
-    if (size > 1_000_000) throw new WorkerOperationError('invalid_request', 'Payload maior que 1 MB.');
-    chunks.push(chunk);
-  }
-  if (!chunks.length) return {};
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  context?.throwIfUnavailable();
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let finished = false;
+
+    const cleanup = () => {
+      request.off('data', onData);
+      request.off('end', onEnd);
+      request.off('error', onError);
+      context?.signal?.removeEventListener('abort', onAbort);
+    };
+    const finish = (error, value) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const onAbort = () => {
+      finish(errorFromAbortSignal(context.signal));
+      request.resume();
+    };
+    const onError = (error) => finish(error);
+    const onData = (chunk) => {
+      try {
+        context?.throwIfUnavailable();
+        size += chunk.length;
+        if (size > 1_000_000) {
+          finish(new WorkerOperationError('invalid_request', 'Payload maior que 1 MB.'));
+          request.resume();
+          return;
+        }
+        chunks.push(chunk);
+      } catch (error) {
+        finish(error);
+        request.resume();
+      }
+    };
+    const onEnd = () => {
+      try {
+        context?.throwIfUnavailable();
+        finish(undefined, chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {});
+      } catch (error) {
+        finish(error);
+      }
+    };
+
+    request.on('data', onData);
+    request.once('end', onEnd);
+    request.once('error', onError);
+    context?.signal?.addEventListener('abort', onAbort, { once: true });
+    if (context?.signal?.aborted) onAbort();
+  });
 }
 
 function withOperationMetadata(body, context, requestId) {
@@ -226,6 +284,18 @@ function loggerFunction(logger) {
   if (typeof logger === 'function') return logger;
   if (typeof logger?.info === 'function') return (event) => logger.info(JSON.stringify(event));
   return () => undefined;
+}
+
+function isAuthorized(request, options) {
+  const expected = String(options.authToken ?? '').trim();
+  if (!expected) return true;
+  const header = request.headers.authorization;
+  const received = typeof header === 'string' && header.toLowerCase().startsWith('bearer ')
+    ? header.slice(7).trim()
+    : '';
+  const expectedBuffer = Buffer.from(expected);
+  const receivedBuffer = Buffer.from(received);
+  return expectedBuffer.length === receivedBuffer.length && timingSafeEqual(expectedBuffer, receivedBuffer);
 }
 
 const mainFile = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
