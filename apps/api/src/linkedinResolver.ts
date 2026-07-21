@@ -1,5 +1,5 @@
 import { env } from './env.js';
-import { CompanyInput } from './types.js';
+import { CompanyInput, WorkerRequestOptions } from './types.js';
 import { domainFromEmail, domainFromUrl, normalizeKey, onlyDigits } from './utils.js';
 import { resolveCompanyPage } from './workerClient.js';
 
@@ -25,7 +25,10 @@ const demoByName: Array<[string, string]> = [
   ['orbital pay', 'https://www.linkedin.com/company/orbital-pay'],
 ];
 
-export async function resolveLinkedInUrl(input: CompanyInput): Promise<ResolveResult> {
+export async function resolveLinkedInUrl(
+  input: CompanyInput,
+  options: WorkerRequestOptions = {},
+): Promise<ResolveResult> {
   if (!env.linkedinEnabled) {
     return {
       confidence: 0,
@@ -57,7 +60,7 @@ export async function resolveLinkedInUrl(input: CompanyInput): Promise<ResolveRe
     city: input.cidade,
     uf: input.uf,
     linkedinUrl: input.linkedinUrl,
-  });
+  }, options);
   return {
     linkedinUrl: result.linkedin_url ? cleanLinkedinCompanyUrl(result.linkedin_url) : undefined,
     confidence: result.confidence ?? 0,

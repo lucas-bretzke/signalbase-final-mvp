@@ -41,7 +41,34 @@ export interface CompanyProfile {
   error?: string;
 }
 
-export type WorkerErrorCode = 'auth_required' | 'challenge' | 'wrong_worker' | 'worker_unavailable' | 'navigation_error' | 'no_verified_match';
+export type WorkerErrorCode =
+  | 'auth_required'
+  | 'challenge'
+  | 'wrong_worker'
+  | 'worker_unavailable'
+  | 'navigation_error'
+  | 'network_error'
+  | 'deadline_exceeded'
+  | 'request_cancelled'
+  | 'queue_timeout'
+  | 'queue_full'
+  | 'invalid_request'
+  | 'no_verified_match'
+  | 'no_company_candidate'
+  | 'company_not_verified'
+  | 'no_verified_decision_maker'
+  | 'contact_not_available'
+  | 'rejected_by_filters';
+
+/**
+ * Optional request-scoped controls for calls to the LinkedIn worker.
+ * `deadline` is an absolute Unix timestamp in milliseconds.
+ */
+export interface WorkerRequestOptions {
+  requestId?: string;
+  deadline?: number;
+  signal?: AbortSignal;
+}
 
 export interface DecisionMaker {
   name: string;

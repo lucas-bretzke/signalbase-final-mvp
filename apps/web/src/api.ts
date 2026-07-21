@@ -14,6 +14,19 @@ const basePath = '/api/lead-searches';
 
 type JsonRecord = Record<string, unknown>;
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly details?: unknown,
+    readonly diagnostic?: unknown,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -25,19 +38,31 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const raw = await response.text();
-    let message = raw || `A solicitação falhou (HTTP ${response.status}).`;
-    try {
-      const parsed = JSON.parse(raw) as JsonRecord;
-      message = String(parsed.message ?? parsed.error ?? message);
-    } catch {
-      // The fallback already contains the most useful response available.
-    }
-    throw new Error(message);
+    throw await apiErrorFromResponse(response, `A solicitação falhou (HTTP ${response.status}).`);
   }
 
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+
+async function apiErrorFromResponse(response: Response, fallback: string): Promise<ApiError> {
+  const raw = await response.text();
+  let message = raw || fallback;
+  let code: string | undefined;
+  let details: unknown;
+  let diagnostic: unknown;
+  try {
+    const parsed = JSON.parse(raw) as JsonRecord;
+    message = String(parsed.message ?? parsed.error ?? message);
+    const parsedDiagnostic = asRecord(parsed.diagnostic);
+    const rawCode = parsed.errorCode ?? parsed.code ?? parsedDiagnostic.errorCode;
+    code = rawCode === undefined ? undefined : String(rawCode);
+    details = parsed.details;
+    diagnostic = parsed.diagnostic;
+  } catch {
+    // The fallback already contains the most useful response available.
+  }
+  return new ApiError(message, response.status, code, details, diagnostic);
 }
 
 function queryString(params: Record<string, string | number | boolean | undefined>): string {
@@ -322,8 +347,7 @@ export async function exportLeadSearch(leadSearchId: string, selectedOnly: boole
     { headers: { accept: 'text/csv' } },
   );
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || 'Não foi possível gerar a exportação.');
+    throw await apiErrorFromResponse(response, 'Não foi possível gerar a exportação.');
   }
   const disposition = response.headers.get('content-disposition') ?? '';
   const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);

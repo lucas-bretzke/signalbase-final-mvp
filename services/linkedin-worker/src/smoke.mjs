@@ -30,9 +30,35 @@ try {
 async function stage(name, action) {
   const startedAt = Date.now();
   const result = await action();
-  console.log(JSON.stringify({ stage: name, durationMs: Date.now() - startedAt, result }, null, 2));
+  console.log(JSON.stringify({
+    stage: name,
+    durationMs: Date.now() - startedAt,
+    result: summarizeResult(name, result),
+  }, null, 2));
   if (name === 'session' && !result.ok) throw new Error(result.error ?? 'Sessao do LinkedIn indisponivel.');
   return result;
+}
+
+function summarizeResult(name, result) {
+  const common = {
+    success: result.success ?? result.ok ?? false,
+    errorCode: result.errorCode,
+  };
+  if (name === 'session') {
+    return { ...common, authenticated: result.authenticated === true, sessionState: result.sessionState };
+  }
+  if (name === 'company') {
+    return {
+      ...common,
+      hasCompanyData: Boolean(result.name || result.industry || result.description || result.company_size),
+      method: result.method_used,
+    };
+  }
+  return {
+    ...common,
+    decisionMakerCount: Array.isArray(result.decision_makers) ? result.decision_makers.length : 0,
+    warningCount: Array.isArray(result.warnings) ? result.warnings.length : 0,
+  };
 }
 
 function parseArguments(values) {

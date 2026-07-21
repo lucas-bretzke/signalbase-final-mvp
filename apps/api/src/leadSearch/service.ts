@@ -1,11 +1,12 @@
 import crypto from 'node:crypto';
 import { env } from '../env.js';
 import { normalizeCnpj } from '../utils.js';
-import { isLinkedinBlockingError } from '../workerClient.js';
+import { isLinkedinBlockingError, isWorkerClientError } from '../workerClient.js';
 import { minQualityFromScore, normalizeLeadSearchFilters } from './leadSearchFilters.js';
 import { stableEntityId } from './leadProcessor.js';
 import {
   LeadProcessingOutcome,
+  LeadProcessingContext,
   LeadProcessor,
   LeadSearch,
   LeadSearchFilters,
@@ -29,6 +30,8 @@ const REPOSITORY_BATCH_SIZE = 500;
 
 export class LeadSearchService {
   private readonly runningJobs = new Map<string, Promise<void>>();
+  private readonly jobControllers = new Map<string, AbortController>();
+  private readonly reprocessJobs = new Map<string, Promise<LeadSearchProgress | undefined>>();
   private readonly deletingSearchIds = new Set<string>();
   private initialized = false;
   private stopping = false;
@@ -70,6 +73,9 @@ export class LeadSearchService {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    for (const controller of this.jobControllers.values()) {
+      if (!controller.signal.aborted) controller.abort(new Error('API encerrando.'));
+    }
     await Promise.allSettled([...this.runningJobs.values()]);
     await this.companySource.close?.();
   }
@@ -122,14 +128,17 @@ export class LeadSearchService {
     const search = await this.repository.getSearch(id);
     if (!search) return undefined;
     if (search.status !== 'blocked' && search.status !== 'paused') return withProgress(search);
-    const resumed = await this.repository.updateSearch(id, {
-      status: 'queued',
-      blockReason: undefined,
-      lastError: undefined,
-      completedAt: undefined,
-      updatedAt: new Date().toISOString(),
+    const resumed = await this.repository.updateSearch(id, (current) => {
+      if (current.status !== 'blocked' && current.status !== 'paused') return;
+      Object.assign(current, {
+        status: 'queued',
+        blockReason: undefined,
+        lastError: undefined,
+        completedAt: undefined,
+        updatedAt: new Date().toISOString(),
+      });
     });
-    this.schedule(id);
+    if (resumed.status === 'queued') this.schedule(id);
     return withProgress(resumed);
   }
 
@@ -137,11 +146,15 @@ export class LeadSearchService {
     const search = await this.repository.getSearch(id);
     if (!search) return undefined;
     if (!isActiveSearchStatus(search.status)) return withProgress(search);
-    const paused = await this.repository.updateSearch(id, {
-      status: 'paused',
-      lastError: undefined,
-      updatedAt: new Date().toISOString(),
+    const paused = await this.repository.updateSearch(id, (current) => {
+      if (!isActiveSearchStatus(current.status)) return;
+      Object.assign(current, {
+        status: 'paused',
+        lastError: undefined,
+        updatedAt: new Date().toISOString(),
+      });
     });
+    if (paused.status === 'paused') this.cancelJob(id, 'Busca pausada pelo operador.');
     return withProgress(paused);
   }
 
@@ -149,6 +162,7 @@ export class LeadSearchService {
     const search = await this.repository.getSearch(id);
     if (!search) return false;
     this.deletingSearchIds.add(id);
+    this.cancelJob(id, 'Busca excluida pelo operador.');
     try {
       return await this.repository.deleteSearch(id);
     } finally {
@@ -156,7 +170,17 @@ export class LeadSearchService {
     }
   }
 
-  async reprocess(id: string): Promise<LeadSearchProgress | undefined> {
+  reprocess(id: string): Promise<LeadSearchProgress | undefined> {
+    const existing = this.reprocessJobs.get(id);
+    if (existing) return existing;
+    const operation = this.reprocessOnce(id).finally(() => {
+      if (this.reprocessJobs.get(id) === operation) this.reprocessJobs.delete(id);
+    });
+    this.reprocessJobs.set(id, operation);
+    return operation;
+  }
+
+  private async reprocessOnce(id: string): Promise<LeadSearchProgress | undefined> {
     const source = await this.repository.getSearch(id);
     if (!source) return undefined;
     if (source.reprocessedBySearchId) return this.get(source.reprocessedBySearchId);
@@ -263,51 +287,66 @@ export class LeadSearchService {
 
   private schedule(searchId: string): void {
     if (this.stopping || this.runningJobs.has(searchId)) return;
+    const controller = new AbortController();
+    this.jobControllers.set(searchId, controller);
     const job = new Promise<void>((resolve) => setImmediate(resolve))
-      .then(() => this.runJob(searchId))
+      .then(() => this.runJob(searchId, controller.signal))
       .catch(async (error) => {
         if (this.deletingSearchIds.has(searchId)) return;
         const current = await this.repository.getSearch(searchId).catch(() => undefined);
-        if (!current || current.status === 'paused') return;
-        const now = new Date().toISOString();
-        const blocked = isLinkedinBlockingError(error);
-        await this.repository.updateSearch(searchId, {
-          status: blocked ? 'blocked' : 'failed',
-          lastError: errorMessage(error),
-          blockReason: blocked ? error.code : undefined,
-          completedAt: now,
-          updatedAt: now,
+        if (!current || current.status === 'paused' || controller.signal.aborted) return;
+        const blocked = isInterruptingWorkerError(error);
+        await this.repository.updateSearch(searchId, (search) => {
+          if (controller.signal.aborted || !isActiveSearchStatus(search.status)) return;
+          const now = new Date().toISOString();
+          Object.assign(search, {
+            status: blocked ? 'blocked' : 'failed',
+            lastError: errorMessage(error),
+            blockReason: blocked && isWorkerClientError(error) ? error.code : undefined,
+            completedAt: now,
+            updatedAt: now,
+          });
         }).catch(() => undefined);
       })
-      .finally(() => {
+      .finally(async () => {
         this.runningJobs.delete(searchId);
+        if (this.jobControllers.get(searchId) === controller) this.jobControllers.delete(searchId);
         this.deletingSearchIds.delete(searchId);
+        if (!this.stopping) {
+          const search = await this.repository.getSearch(searchId).catch(() => undefined);
+          if (search?.status === 'queued') this.schedule(searchId);
+        }
       });
     this.runningJobs.set(searchId, job);
   }
 
-  private async runJob(searchId: string): Promise<void> {
+  private async runJob(searchId: string, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
     const current = await this.repository.getSearch(searchId);
     if (!current || isTerminal(current.status)) return;
     const startedAt = current.startedAt ?? new Date().toISOString();
-    await this.repository.updateSearch(searchId, {
-      status: 'processing',
-      startedAt,
-      updatedAt: new Date().toISOString(),
-      lastError: undefined,
+    const processing = await this.repository.updateSearch(searchId, (search) => {
+      if (signal.aborted || !isActiveSearchStatus(search.status)) return;
+      Object.assign(search, {
+        status: 'processing',
+        startedAt,
+        updatedAt: new Date().toISOString(),
+        lastError: undefined,
+      });
     });
+    if (signal.aborted || processing.status !== 'processing') return;
 
-    while (!this.stopping) {
+    while (!this.stopping && !signal.aborted) {
       const search = await this.repository.getSearch(searchId);
       if (!search) return;
       if (isTerminal(search.status)) return;
       if (targetReached(search)) {
-        await this.finish(searchId, 'target_reached');
+        await this.finish(searchId, 'target_reached', signal);
         return;
       }
       const streamingCandidates = search.candidateCountStatus === 'lower_bound';
       if (!streamingCandidates && search.totalProcessed >= search.totalCandidatesFound) {
-        await this.finish(searchId, 'candidate_pool_exhausted');
+        await this.finish(searchId, 'candidate_pool_exhausted', signal);
         return;
       }
 
@@ -322,6 +361,9 @@ export class LeadSearchService {
         limit: requestedLimit,
         preferences: search,
       });
+      if (this.stopping || signal.aborted) return;
+      const afterFind = await this.repository.getSearch(searchId);
+      if (!afterFind || isTerminal(afterFind.status)) return;
       if (!candidates.length) {
         if (streamingCandidates) {
           await this.repository.updateSearch(searchId, {
@@ -330,7 +372,7 @@ export class LeadSearchService {
             updatedAt: new Date().toISOString(),
           });
         }
-        await this.finish(searchId, 'candidate_pool_exhausted');
+        await this.finish(searchId, 'candidate_pool_exhausted', signal);
         return;
       }
 
@@ -344,20 +386,26 @@ export class LeadSearchService {
       }
 
       for (const candidate of candidates) {
-        if (this.stopping) return;
+        if (this.stopping || signal.aborted) return;
         const latest = await this.repository.getSearch(searchId);
         if (!latest) return;
         if (isTerminal(latest.status)) return;
         if (targetReached(latest)) {
-          await this.finish(searchId, 'target_reached');
+          await this.finish(searchId, 'target_reached', signal);
           return;
         }
-        const outcome = await this.processSafely(latest, candidate);
+        const outcome = await this.processSafely(latest, candidate, signal);
+        if (signal.aborted) return;
         const beforeRecord = await this.repository.getSearch(searchId);
         if (!beforeRecord || isTerminal(beforeRecord.status)) return;
-        const updated = await this.repository.recordProcessed(searchId, outcome.result, outcome.crossMatch);
+        const updated = await this.repository.recordProcessed(
+          searchId,
+          outcome.result,
+          outcome.crossMatch,
+          { expectedStatus: 'processing', signal },
+        );
         if (targetReached(updated)) {
-          await this.finish(searchId, 'target_reached');
+          await this.finish(searchId, 'target_reached', signal);
           return;
         }
         await yieldEventLoop();
@@ -365,11 +413,17 @@ export class LeadSearchService {
     }
   }
 
-  private async processSafely(search: LeadSearch, candidate: ReceitaCompany): Promise<LeadProcessingOutcome> {
+  private async processSafely(search: LeadSearch, candidate: ReceitaCompany, signal: AbortSignal): Promise<LeadProcessingOutcome> {
+    const context: LeadProcessingContext = {
+      signal,
+      requestId: crypto.randomUUID(),
+      deadline: Date.now() + env.leadOperationTimeoutMs,
+    };
     try {
-      return await this.processor.process(search, candidate);
+      return await this.processor.process(search, candidate, context);
     } catch (error) {
-      if (isLinkedinBlockingError(error)) throw error;
+      if (signal.aborted) throw error;
+      if (isInterruptingWorkerError(error)) throw error;
       const now = new Date().toISOString();
       const result: LeadSearchResult = {
         id: stableEntityId('result', `${search.id}:${candidate.cnpj}`),
@@ -387,13 +441,26 @@ export class LeadSearchService {
     }
   }
 
-  private async finish(searchId: string, completionReason: NonNullable<LeadSearch['completionReason']>): Promise<void> {
+  private cancelJob(searchId: string, reason: string): void {
+    const controller = this.jobControllers.get(searchId);
+    if (controller && !controller.signal.aborted) controller.abort(new Error(reason));
+  }
+
+  private async finish(
+    searchId: string,
+    completionReason: NonNullable<LeadSearch['completionReason']>,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (signal.aborted) return;
     const now = new Date().toISOString();
-    await this.repository.updateSearch(searchId, {
-      status: 'completed',
-      completionReason,
-      completedAt: now,
-      updatedAt: now,
+    await this.repository.updateSearch(searchId, (search) => {
+      if (signal.aborted || !isActiveSearchStatus(search.status)) return;
+      Object.assign(search, {
+        status: 'completed',
+        completionReason,
+        completedAt: now,
+        updatedAt: now,
+      });
     });
   }
 
@@ -445,6 +512,19 @@ export function withProgress(search: LeadSearch): LeadSearchProgress {
 
 function isTerminal(status: LeadSearchStatus): boolean {
   return status === 'paused' || status === 'blocked' || status === 'completed' || status === 'exhausted' || status === 'failed';
+}
+
+function isInterruptingWorkerError(error: unknown): boolean {
+  if (isLinkedinBlockingError(error)) return true;
+  if (!isWorkerClientError(error)) return false;
+  return [
+    'navigation_error',
+    'network_error',
+    'deadline_exceeded',
+    'request_cancelled',
+    'queue_timeout',
+    'queue_full',
+  ].includes(error.code);
 }
 
 function isActiveSearchStatus(status: LeadSearchStatus): boolean {

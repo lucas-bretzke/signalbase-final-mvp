@@ -16,9 +16,15 @@ O endpoint principal solicitado no escopo como `POST /lead-searches` e o endpoin
 | Método | Endpoint canônico | Finalidade |
 | --- | --- | --- |
 | `GET` | `/api/health` | Saúde da API, provedor e worker. |
+| `GET` | `/api/capabilities` | Readiness passiva e filtros que podem ser aceitos. |
+| `POST` | `/api/linkedin/test` | Teste ativo e explícito da sessão autorizada. |
 | `POST` | `/api/lead-searches` | Criar uma busca e iniciar o job. |
 | `GET` | `/api/lead-searches` | Listar buscas. |
 | `GET` | `/api/lead-searches/:id` | Obter configuração e progresso. |
+| `POST` | `/api/lead-searches/:id/pause` | Pausar e cancelar a candidata em voo. |
+| `POST` | `/api/lead-searches/:id/resume` | Testar readiness quando necessário e retomar. |
+| `POST` | `/api/lead-searches/:id/reprocess` | Criar uma nova busca vinculada à anterior. |
+| `DELETE` | `/api/lead-searches/:id` | Excluir a busca e seus resultados. |
 | `GET` | `/api/lead-searches/:id/results` | Listar resultados parciais/finais. |
 | `GET` | `/api/lead-searches/:id/results/:resultId` | Abrir um resultado com cross-match. |
 | `PATCH` | `/api/lead-searches/:id/results/:resultId` | Marcar/desmarcar para exportação. |
@@ -56,13 +62,16 @@ Retorna o estado da API, do worker e metadados operacionais seguros da fonte da 
 | `uf` | string | obrigatório; sigla brasileira com duas letras. |
 | `city` | string | opcional; vazio/ausente consulta o estado inteiro. |
 | `cnaes` | string[] | obrigatório; um ou mais CNAEs de sete dígitos. |
-| `targetQuantity` | integer | obrigatório; 1–10.000 leads finais válidos. |
+| `targetQuantity` | integer ou `"max"` | obrigatório; 1–10.000 leads finais válidos, ou todas as candidatas com `"max"`. |
+| `targetMode` | `fixed` ou `max` | opcional; inferido de `targetQuantity` quando ausente. |
 | `minScore` | integer | opcional; 0–100, padrão 0. |
+| `minQuality` | `baixo`, `medio`, `alto` ou `muito_alto` | opcional; substitui o corte legado de score. |
 | `requirePhone` | boolean | só aceita lead com telefone tecnicamente válido. |
 | `requireEmail` | boolean | só aceita lead com e-mail tecnicamente válido. |
 | `requireDecisionMakerMatch` | boolean | exige cross-match sócio–decisor acima do corte. |
 | `onlyMobilePhone` | boolean | quando ativo, contato final precisa ser celular brasileiro. |
 | `onlyCorporateEmail` | boolean | rejeita provedores gratuitos no contato final. |
+| `emailType` | `any`, `corporate` ou `non_corporate` | tipo de e-mail aceito; filtros específicos também tornam e-mail obrigatório. |
 | `excludeGenericContacts` | boolean | exclui caixas como `contato@`, `vendas@` e `info@`. |
 
 Os três últimos filtros são extensões opcionais do payload mínimo e permitem cumprir os filtros adicionais da busca. Envie booleanos, não strings.
@@ -110,7 +119,7 @@ Parâmetros:
 
 - `page`: página, padrão 1;
 - `pageSize`: itens por página, máximo 200;
-- `status`: filtro opcional (`queued`, `processing`, `completed`, `exhausted`, `failed`).
+- `status`: filtro opcional (`queued`, `processing`, `paused`, `blocked`, `completed`, `exhausted`, `failed`).
 
 ```json
 {
@@ -242,8 +251,10 @@ O CSV inclui CNPJ/empresa, cidade, UF, CNAE, sócio, Company Page, decisor, matc
 | --- | --- | --- |
 | `queued` | não | aguardando o job. |
 | `processing` | não | processando páginas/lotes. |
-| `completed` | sim | meta de leads válidos atingida. |
-| `exhausted` | sim | candidatas acabaram antes da meta. |
+| `paused` | sim até retomada | pausada pelo operador; a candidata em voo não é consumida. |
+| `blocked` | sim até retomada | infraestrutura, autenticação, challenge, deadline ou fila impediram continuar com segurança. |
+| `completed` | sim | terminou; consulte `completionReason` (`target_reached` ou `candidate_pool_exhausted`). |
+| `exhausted` | sim | valor legado aceito para compatibilidade; novos jobs usam `completed` + `candidate_pool_exhausted`. |
 | `failed` | sim | falha impediu o job; consulte `lastError`. |
 
 ### Resultado
@@ -269,8 +280,20 @@ Formato típico:
 | HTTP | Significado |
 | --- | --- |
 | `400` | payload ou query string inválida. |
+| `401` / `409` | login ou verificação manual necessários no worker. |
 | `404` | busca/resultado não encontrado ou associação incorreta. |
+| `429` / `503` | backpressure, fila cheia/expirada ou worker indisponível. |
+| `499` / `504` | operação cancelada ou deadline excedido. |
+| `502` | falha transitória de rede ou navegação. |
 | `500` | falha interna/persistência. |
+
+`POST /api/enrich` preserva os status tipados acima. Endpoints de readiness, criação e retomada
+podem normalizar indisponibilidade para `503`, mantendo `errorCode` no corpo. Quando disponível,
+`errorCode` preserva uma categoria estável: `auth_required`, `challenge`,
+`navigation_error`, `network_error`, `deadline_exceeded`, `request_cancelled`, `queue_timeout`,
+`queue_full`, `worker_unavailable`, `wrong_worker`, `invalid_request` ou um resultado funcional como
+`no_company_candidate`, `company_not_verified`, `no_verified_match` e `rejected_by_filters`. Falhas de infraestrutura
+não são convertidas em resultado funcional vazio.
 
 ## Modo CNPJ avançado
 

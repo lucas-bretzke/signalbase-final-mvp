@@ -9,6 +9,7 @@ import {
   LeadSearchRepositoryListOptions,
   LeadSearchResult,
   LeadSearchResultRepositoryListOptions,
+  RecordProcessedOptions,
   RepositoryPage,
 } from './types.js';
 
@@ -79,9 +80,16 @@ export class JsonLeadSearchRepository implements LeadSearchRepository {
     });
   }
 
-  async recordProcessed(searchId: string, result: LeadSearchResult, crossMatch?: LeadCrossMatch): Promise<LeadSearch> {
+  async recordProcessed(
+    searchId: string,
+    result: LeadSearchResult,
+    crossMatch?: LeadCrossMatch,
+    options?: RecordProcessedOptions,
+  ): Promise<LeadSearch> {
     return this.transaction((database) => {
       const search = requiredSearch(database, searchId);
+      if (options?.signal?.aborted) return search;
+      if (options?.expectedStatus && search.status !== options.expectedStatus) return search;
       const existingIndex = database.results.findIndex((item) => item.id === result.id);
       const existing = existingIndex >= 0 ? database.results[existingIndex] : undefined;
 

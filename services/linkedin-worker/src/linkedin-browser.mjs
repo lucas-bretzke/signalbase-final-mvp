@@ -3,6 +3,14 @@ import puppeteer from 'puppeteer';
 import { config } from './config.mjs';
 import { JsonCache } from './cache.mjs';
 import {
+  OperationContext,
+  SerialOperationQueue,
+  WorkerOperationError,
+  asOperationError,
+  createOperationContext,
+  errorFromAbortSignal,
+} from './operation.mjs';
+import {
   annotatePartnerMatches,
   cacheKey,
   companySearchQueries,
@@ -19,11 +27,26 @@ import {
 } from './extractors.mjs';
 
 export class LinkedinBrowserWorker {
-  constructor(options = config) {
+  constructor(options = config, dependencies = {}) {
     this.options = options;
-    this.cache = new JsonCache(options.cachePath, options.cacheTtlMs);
+    this.now = dependencies.now ?? Date.now;
+    this.launchBrowser = dependencies.launchBrowser ?? ((launchOptions) => puppeteer.launch(launchOptions));
+    this.log = loggerFunction(dependencies.logger ?? console);
+    this.cache = dependencies.cache ?? new JsonCache(options.cachePath, {
+      ttlMs: options.cacheTtlMs,
+      negativeTtlMs: options.negativeCacheTtlMs,
+      emptyTtlMs: options.emptyCacheTtlMs,
+      schemaVersion: options.cacheSchemaVersion,
+      extractorVersion: options.extractorVersion,
+      mode: options.mode,
+      now: this.now,
+    });
     this.browser = undefined;
-    this.queueTail = Promise.resolve();
+    this.queue = dependencies.queue ?? new SerialOperationQueue({
+      maxDepth: options.maxQueueDepth,
+      waitTimeoutMs: options.queueWaitTimeoutMs,
+      now: this.now,
+    });
     this.lastNavigationAt = 0;
     this.sessionState = 'not_checked';
     this.lastError = undefined;
@@ -37,6 +60,10 @@ export class LinkedinBrowserWorker {
   }
 
   health() {
+    const queue = this.queue.health();
+    const acceptingWork = queue.queueDepth < queue.maxQueueDepth;
+    const ready = Boolean(this.options.enabled)
+      && (this.options.mode === 'demo' || (this.sessionState === 'authenticated' && acceptingWork));
     return {
       browser_available: true,
       browser_connected: Boolean(this.browser?.connected),
@@ -45,218 +72,228 @@ export class LinkedinBrowserWorker {
       last_checked_at: this.lastCheckedAt,
       last_operation: this.lastOperation,
       last_success_at: this.lastSuccessAt,
-      ready: this.options.mode === 'demo' || this.sessionState === 'authenticated',
-      profile_directory: this.options.profileDirectory,
+      ready,
+      readiness_reason: ready
+        ? undefined
+        : !this.options.enabled
+          ? 'disabled'
+          : !acceptingWork ? 'queue_full' : this.sessionState === 'challenge' ? 'challenge' : 'auth_required',
       headless: this.options.headless,
       queue: 'serial',
+      queueDepth: queue.queueDepth,
+      maxQueueDepth: queue.maxQueueDepth,
+      queueWaitTimeoutMs: queue.queueWaitTimeoutMs,
+      activeOperation: queue.activeOperation,
+      queueMetrics: {
+        accepted: queue.accepted,
+        completed: queue.completed,
+        rejected: queue.rejected,
+        cancelled: queue.cancelled,
+        maxObservedDepth: queue.maxObservedDepth,
+        lastQueueWaitMs: queue.lastQueueWaitMs,
+      },
+      passive: true,
     };
   }
 
-  async resolveCompany(input) {
-    const key = cacheKey('resolve', input);
-    const cached = this.cache.get(key);
-    if (cached) return { ...cached, cached: true };
+  async resolveCompany(input, operation) {
+    return this.executeOperation('resolve_company', operation, async (context) => {
+      const key = cacheKey('resolve', input);
+      const cached = this.cache.get(key);
+      if (cached) return { ...cached, cached: true };
 
-    if (input.linkedin_url) {
-      const direct = normalizeCompanyUrl(input.linkedin_url);
-      if (direct) {
-        const result = {
-          success: true,
-          linkedin_url: direct,
-          confidence: 99,
-          provider: 'input',
-          reason: 'URL do LinkedIn informada na entrada.',
-          verificationLevel: 'url_only',
-        };
-        await this.cache.set(key, result);
-        return result;
+      if (input.linkedin_url) {
+        const direct = normalizeCompanyUrl(input.linkedin_url);
+        if (direct) {
+          const result = {
+            success: true,
+            linkedin_url: direct,
+            confidence: 99,
+            provider: 'input',
+            reason: 'URL do LinkedIn informada na entrada.',
+            verificationLevel: 'url_only',
+          };
+          await this.cache.setResult(key, result);
+          return result;
+        }
       }
-    }
 
-    const queries = companySearchQueries(input);
-    const candidates = new Map();
-    const warnings = [];
+      const queries = companySearchQueries(input);
+      const candidates = new Map();
+      const warnings = [];
 
-    for (const query of queries) {
-      const rows = await this.searchBing(query).catch((error) => {
-        warnings.push(`Busca Bing falhou: ${errorMessage(error)}`);
-        return [];
-      });
-      for (const candidate of companyUrlsFromSearchRows(rows)) {
-        if (!candidates.has(candidate.url)) candidates.set(candidate.url, { ...candidate, provider: 'puppeteer_bing', query });
-      }
-      if (candidates.size >= this.options.maxCompanyCandidates) break;
-    }
-
-    if (candidates.size < this.options.maxCompanyCandidates) {
-      for (const query of queries.slice(0, 2)) {
-        const rows = await this.searchLinkedinCompanies(query).catch((error) => {
-          warnings.push(`Busca interna do LinkedIn falhou: ${errorMessage(error)}`);
-          return [];
-        });
+      for (const query of queries) {
+        context.throwIfUnavailable(this.options.minNavigationBudgetMs);
+        const rows = await this.searchBing(query, context);
         for (const candidate of companyUrlsFromSearchRows(rows)) {
-          if (!candidates.has(candidate.url)) candidates.set(candidate.url, { ...candidate, provider: 'puppeteer_linkedin_search', query });
+          if (!candidates.has(candidate.url)) candidates.set(candidate.url, { ...candidate, provider: 'puppeteer_bing', query });
+        }
+        if (candidates.size >= this.options.maxCompanyCandidates) break;
+      }
+
+      if (candidates.size < this.options.maxCompanyCandidates) {
+        for (const query of queries.slice(0, 2)) {
+          context.throwIfUnavailable(this.options.minNavigationBudgetMs);
+          const rows = await this.searchLinkedinCompanies(query, context);
+          for (const candidate of companyUrlsFromSearchRows(rows)) {
+            if (!candidates.has(candidate.url)) candidates.set(candidate.url, { ...candidate, provider: 'puppeteer_linkedin_search', query });
+          }
         }
       }
-    }
 
-    let best;
-    for (const candidate of [...candidates.values()].slice(0, this.options.maxCompanyCandidates)) {
-      const profile = await this.extractCompany(candidate.url);
-      const confidence = scoreCompanyCandidate(input, candidate, profile);
-      if (!best || confidence > best.confidence) best = { candidate, profile, confidence };
-    }
+      let best;
+      for (const candidate of [...candidates.values()].slice(0, this.options.maxCompanyCandidates)) {
+        context.throwIfUnavailable(this.options.minNavigationBudgetMs);
+        const profile = await this.extractCompany(candidate.url, context);
+        const confidence = scoreCompanyCandidate(input, candidate, profile);
+        if (!best || confidence > best.confidence) best = { candidate, profile, confidence };
+        if (confidence >= 95 && profile?.success) break;
+      }
 
-    const result = best && best.confidence >= 55
-      ? {
-          success: true,
-          linkedin_url: best.candidate.url,
-          confidence: best.confidence,
-          provider: best.candidate.provider,
-          reason: `Pagina localizada e comparada com nome, dominio e localidade. Consulta: ${best.candidate.query}`,
-          verificationLevel: best.profile?.success ? 'company_verified' : 'url_only',
-          company_profile: best.profile,
-          warnings,
-        }
-      : {
-          success: false,
-          confidence: 0,
-          provider: 'puppeteer',
-          reason: candidates.size
-            ? 'Foram encontradas paginas, mas nenhuma atingiu confianca minima para representar a empresa.'
-            : 'Nenhuma Company Page foi encontrada pelo navegador.',
-          warnings,
-        };
-    this.recordOperation('resolve_company', result.success, result.reason);
-    if (shouldCacheWorkerResult(result)) await this.cache.set(key, result);
-    return result;
-  }
-
-  async extractCompany(linkedinUrl) {
-    const url = normalizeCompanyUrl(linkedinUrl);
-    if (!url) return { success: false, linkedin_url: linkedinUrl, method_used: 'puppeteer_invalid_url', error: 'URL de empresa invalida.' };
-    const key = cacheKey('company', url);
-    const cached = this.cache.get(key);
-    if (cached) return { ...cached, cached: true };
-
-    const result = await this.withPage(async (page) => {
-      await this.navigate(page, `${url}/about/`);
-      const snapshot = await pageSnapshot(page);
-      const profile = parseCompanySnapshot(snapshot, url);
-      this.observeSession(profile.authenticated, profile.error, profile.errorCode);
-      return profile;
+      const result = best && best.confidence >= 55
+        ? {
+            success: true,
+            linkedin_url: best.candidate.url,
+            confidence: best.confidence,
+            provider: best.candidate.provider,
+            reason: `Pagina localizada e comparada com nome, dominio e localidade. Consulta: ${best.candidate.query}`,
+            verificationLevel: best.profile?.success ? 'company_verified' : 'url_only',
+            company_profile: best.profile,
+            warnings,
+          }
+        : {
+            success: false,
+            confidence: 0,
+            provider: 'puppeteer',
+            reason: candidates.size
+              ? 'Foram encontradas paginas, mas nenhuma atingiu confianca minima para representar a empresa.'
+              : 'Nenhuma Company Page foi encontrada pelo navegador.',
+            warnings,
+            errorCode: candidates.size ? 'company_not_verified' : 'no_company_candidate',
+          };
+      await this.cache.setResult(key, result);
+      return result;
     });
-    this.recordOperation('extract_company', result.success, result.error);
-    if (shouldCacheWorkerResult(result)) await this.cache.set(key, result);
-    return result;
   }
 
-  async searchDecisionMakers(payload) {
-    const companyUrl = normalizeCompanyUrl(payload.linkedin_url);
-    if (!companyUrl) {
-      return { success: false, source: 'puppeteer_linkedin', decision_makers: [], warnings: ['URL da empresa no LinkedIn invalida.'] };
-    }
-    const key = cacheKey('people', payload);
-    const cached = this.cache.get(key);
-    if (cached) return { ...cached, cached: true };
+  async extractCompany(linkedinUrl, operation) {
+    return this.executeOperation('extract_company', operation, async (context) => {
+      const url = normalizeCompanyUrl(linkedinUrl);
+      if (!url) return { success: false, linkedin_url: linkedinUrl, method_used: 'puppeteer_invalid_url', error: 'URL de empresa invalida.' };
+      const key = cacheKey('company', url);
+      const cached = this.cache.get(key);
+      if (cached) return { ...cached, cached: true };
 
-    const maxResults = Math.max(0, Number(payload.max_results ?? 8));
-    const partnerNames = (payload.partner_names ?? []).map((value) => String(value).split(/\s+-\s+/)[0].trim()).filter(Boolean);
-    const searches = unique([...partnerNames.slice(0, 3), ...(payload.keywords ?? [])]).slice(0, this.options.maxPeopleSearches);
-    const warnings = [];
-    let people = [];
-
-    for (const keyword of searches) {
-      if (people.length >= maxResults) break;
-      const rows = await this.withPage(async (page) => {
-        const peopleUrl = `${companyUrl}/people/?keywords=${encodeURIComponent(keyword)}`;
-        await this.navigate(page, peopleUrl);
-        await autoScroll(page);
+      const result = await this.withPage(async (page) => {
+        await this.navigate(page, `${url}/about/`, context);
         const snapshot = await pageSnapshot(page);
-        const state = pageState(snapshot);
-        this.observeSession(state.authenticated, state.reason, state.code);
-        if (state.blocked) {
-          warnings.push(state.reason);
-          return [];
-        }
-        return peopleRows(page);
-      }).catch((error) => {
-        warnings.push(`Falha ao pesquisar "${keyword}": ${errorMessage(error)}`);
-        return [];
-      });
-      const verifiedRows = rows.map((row) => ({
-        ...row,
-        associationVerified: true,
-        associationMethod: 'company_people',
-        currentCompanyName: payload.company_name,
-        currentCompanyLinkedinUrl: companyUrl,
-      }));
-      people = dedupePeople([...people, ...parsePeopleRows(verifiedRows, keyword, payload.company_name)]);
-    }
-
-    people = annotatePartnerMatches(people.filter((person) => person.associationVerified), partnerNames);
-    const matchedPartners = new Set(people.filter((person) => person.partner_match).map((person) => person.matched_partner_name));
-    for (const partnerName of partnerNames.filter((name) => !matchedPartners.has(name))) {
-      if (people.length >= maxResults) break;
-      const candidates = await this.searchGlobalPeople(`${partnerName} ${payload.company_name ?? ''}`).catch((error) => {
-        warnings.push(`Busca externa de ${partnerName} falhou: ${errorMessage(error)}`);
-        return [];
-      });
-      for (const candidate of parsePeopleRows(candidates, partnerName, payload.company_name).slice(0, 3)) {
-        const verified = await this.verifyProfileAssociation(candidate, payload, companyUrl).catch((error) => {
-          warnings.push(`Vinculo de ${candidate.name} nao confirmado: ${errorMessage(error)}`);
-          return undefined;
-        });
-        if (verified) people = dedupePeople([...people, verified]);
-        if (people.length >= maxResults) break;
-      }
-    }
-
-    people = annotatePartnerMatches(people.filter((person) => person.associationVerified), partnerNames).slice(0, maxResults);
-    if (this.options.extractProfileContacts && people.length) {
-      const contactLimit = Math.min(this.options.maxContactProfiles, people.length);
-      for (let index = 0; index < contactLimit; index += 1) {
-        const contacts = await this.extractProfileContacts(people[index].linkedin_url).catch((error) => {
-          warnings.push(`Contato de ${people[index].name} indisponivel: ${errorMessage(error)}`);
-          return { emails: [], phones: [] };
-        });
-        people[index] = { ...people[index], ...contacts };
-      }
-    }
-
-    const result = {
-      success: people.length > 0,
-      source: 'puppeteer_linkedin',
-      decision_makers: people,
-      warnings: unique([
-        ...warnings.filter(Boolean),
-        ...(people.length ? [] : ['Nenhum decisor com vinculo atual comprovado foi encontrado.']),
-      ]),
-      errorCode: people.length ? undefined : 'no_verified_match',
-    };
-    this.recordOperation('search_decision_makers', result.success, result.warnings.at(-1));
-    if (shouldCacheWorkerResult(result)) await this.cache.set(key, result);
-    return result;
-  }
-
-  async searchGlobalPeople(keywords) {
-    return this.withPage(async (page) => {
-      await this.navigate(page, `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(keywords)}`);
-      await autoScroll(page);
-      const snapshot = await pageSnapshot(page);
-      const state = pageState(snapshot);
-      this.observeSession(state.authenticated, state.reason, state.code);
-      return state.blocked ? [] : peopleRows(page);
+        const profile = parseCompanySnapshot(snapshot, url);
+        this.observeSession(profile.authenticated, profile.error, profile.errorCode);
+        throwForBlockedCode(profile.errorCode);
+        return profile;
+      }, context, 'extract_company_page');
+      await this.cache.setResult(key, result);
+      return result;
     });
   }
 
-  async verifyProfileAssociation(person, payload, companyUrl) {
-    return this.withPage(async (page) => {
-      await this.navigate(page, `${person.linkedin_url}/details/experience/`);
+  async searchDecisionMakers(payload, operation) {
+    return this.executeOperation('search_decision_makers', operation, async (context) => {
+      const companyUrl = normalizeCompanyUrl(payload.linkedin_url);
+      if (!companyUrl) {
+        return { success: false, source: 'puppeteer_linkedin', decision_makers: [], warnings: ['URL da empresa no LinkedIn invalida.'] };
+      }
+      const key = cacheKey('people', payload);
+      const cached = this.cache.get(key);
+      if (cached) return { ...cached, cached: true };
+
+      const maxResults = Math.max(0, Number(payload.max_results ?? 8));
+      const partnerNames = (payload.partner_names ?? []).map((value) => String(value).split(/\s+-\s+/)[0].trim()).filter(Boolean);
+      const searches = unique([...partnerNames.slice(0, 3), ...(payload.keywords ?? [])]).slice(0, this.options.maxPeopleSearches);
+      const warnings = [];
+      let people = [];
+
+      for (const keyword of searches) {
+        if (people.length >= maxResults) break;
+        context.throwIfUnavailable(this.options.minNavigationBudgetMs);
+        const rows = await this.withPage(async (page) => {
+          const peopleUrl = `${companyUrl}/people/?keywords=${encodeURIComponent(keyword)}`;
+          await this.navigate(page, peopleUrl, context);
+          await autoScroll(page, context);
+          const snapshot = await pageSnapshot(page);
+          const state = pageState(snapshot);
+          this.observeSession(state.authenticated, state.reason, state.code);
+          throwForBlockedState(state);
+          return peopleRows(page);
+        }, context, 'company_people_search');
+        const verifiedRows = rows.map((row) => ({
+          ...row,
+          associationVerified: true,
+          associationMethod: 'company_people',
+          currentCompanyName: payload.company_name,
+          currentCompanyLinkedinUrl: companyUrl,
+        }));
+        people = dedupePeople([...people, ...parsePeopleRows(verifiedRows, keyword, payload.company_name)]);
+      }
+
+      people = annotatePartnerMatches(people.filter((person) => person.associationVerified), partnerNames);
+      const matchedPartners = new Set(people.filter((person) => person.partner_match).map((person) => person.matched_partner_name));
+      for (const partnerName of partnerNames.filter((name) => !matchedPartners.has(name))) {
+        if (people.length >= maxResults) break;
+        context.throwIfUnavailable(this.options.minNavigationBudgetMs);
+        const candidates = await this.searchGlobalPeople(`${partnerName} ${payload.company_name ?? ''}`, context);
+        for (const candidate of parsePeopleRows(candidates, partnerName, payload.company_name).slice(0, 3)) {
+          context.throwIfUnavailable(this.options.minNavigationBudgetMs);
+          const verified = await this.verifyProfileAssociation(candidate, payload, companyUrl, context);
+          if (verified) people = dedupePeople([...people, verified]);
+          if (people.length >= maxResults) break;
+        }
+      }
+
+      people = annotatePartnerMatches(people.filter((person) => person.associationVerified), partnerNames).slice(0, maxResults);
+      if (this.options.extractProfileContacts && people.length) {
+        const contactLimit = Math.min(this.options.maxContactProfiles, people.length);
+        for (let index = 0; index < contactLimit; index += 1) {
+          context.throwIfUnavailable(this.options.minNavigationBudgetMs);
+          const contacts = await this.extractProfileContacts(people[index].linkedin_url, context);
+          people[index] = { ...people[index], ...contacts };
+        }
+      }
+
+      const result = {
+        success: people.length > 0,
+        source: 'puppeteer_linkedin',
+        decision_makers: people,
+        warnings: unique([
+          ...warnings.filter(Boolean),
+          ...(people.length ? [] : ['Nenhum decisor com vinculo atual comprovado foi encontrado.']),
+        ]),
+        errorCode: people.length ? undefined : 'no_verified_match',
+      };
+      await this.cache.setResult(key, result);
+      return result;
+    });
+  }
+
+  async searchGlobalPeople(keywords, operation) {
+    return this.withPage(async (page, context) => {
+      await this.navigate(page, `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(keywords)}`, context);
+      await autoScroll(page, context);
       const snapshot = await pageSnapshot(page);
       const state = pageState(snapshot);
       this.observeSession(state.authenticated, state.reason, state.code);
-      if (state.blocked) return undefined;
+      throwForBlockedState(state);
+      return peopleRows(page);
+    }, operation, 'global_people_search');
+  }
+
+  async verifyProfileAssociation(person, payload, companyUrl, operation) {
+    return this.withPage(async (page, context) => {
+      await this.navigate(page, `${person.linkedin_url}/details/experience/`, context);
+      const snapshot = await pageSnapshot(page);
+      const state = pageState(snapshot);
+      this.observeSession(state.authenticated, state.reason, state.code);
+      throwForBlockedState(state);
       const association = verifyCurrentCompanyAssociation(await experienceRows(page), {
         companyName: payload.company_name,
         linkedinUrl: companyUrl,
@@ -270,109 +307,144 @@ export class LinkedinBrowserWorker {
         currentCompanyLinkedinUrl: association.companyLinkedinUrl ?? companyUrl,
         confidence: Math.min(99, Math.max(person.confidence, association.confidence)),
       };
+    }, operation, 'profile_association');
+  }
+
+  async checkSession(operation) {
+    return this.executeOperation('session_check', operation, async (context) => {
+      const result = await this.withPage(async (page) => {
+        await this.navigate(page, 'https://www.linkedin.com/feed/', context);
+        const snapshot = await pageSnapshot(page);
+        const state = pageState(snapshot);
+        this.observeSession(state.authenticated, state.reason, state.code);
+        return {
+          ok: state.authenticated && !state.blocked,
+          authenticated: state.authenticated && !state.blocked,
+          sessionState: this.sessionState,
+          errorCode: state.code,
+          error: state.reason,
+          checkedAt: new Date().toISOString(),
+        };
+      }, context, 'session_check_page');
+      return result;
     });
   }
 
-  async checkSession() {
-    const result = await this.withPage(async (page) => {
-      await this.navigate(page, 'https://www.linkedin.com/feed/');
-      const snapshot = await pageSnapshot(page);
-      const state = pageState(snapshot);
-      this.observeSession(state.authenticated, state.reason, state.code);
-      return {
-        ok: state.authenticated && !state.blocked,
-        authenticated: state.authenticated && !state.blocked,
-        sessionState: this.sessionState,
-        errorCode: state.code,
-        error: state.reason,
-        checkedAt: new Date().toISOString(),
-      };
-    });
-    this.recordOperation('session_check', result.ok, result.error);
-    return result;
-  }
-
-  async extractProfileContacts(profileUrl) {
+  async extractProfileContacts(profileUrl, operation) {
     const url = normalizeProfileUrl(profileUrl);
     if (!url) return { emails: [], phones: [] };
     const key = cacheKey('contacts', url);
     const cached = this.cache.get(key);
     if (cached) return cached;
 
-    const contacts = await this.withPage(async (page) => {
-      await this.navigate(page, `${url}/overlay/contact-info/`);
+    const contacts = await this.withPage(async (page, context) => {
+      await this.navigate(page, `${url}/overlay/contact-info/`, context);
       const snapshot = await pageSnapshot(page);
       const state = pageState(snapshot);
       this.observeSession(state.authenticated, state.reason, state.code);
-      return state.blocked ? { emails: [], phones: [] } : contactValues(snapshot);
-    });
-    await this.cache.set(key, contacts);
+      throwForBlockedState(state);
+      return contactValues(snapshot);
+    }, operation, 'profile_contacts');
+    await this.cache.setResult(key, contacts);
     return contacts;
   }
 
-  async searchBing(query) {
-    return this.withPage(async (page) => {
-      await this.navigate(page, `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=10`);
+  async searchBing(query, operation) {
+    return this.withPage(async (page, context) => {
+      await this.navigate(page, `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=10`, context);
       return searchRows(page);
-    });
+    }, operation, 'company_external_search');
   }
 
-  async searchLinkedinCompanies(query) {
-    return this.withPage(async (page) => {
+  async searchLinkedinCompanies(query, operation) {
+    return this.withPage(async (page, context) => {
       const keywords = query.replace(/^site:linkedin\.com\/company\s*/i, '').replace(/["']/g, '');
-      await this.navigate(page, `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(keywords)}`);
+      await this.navigate(page, `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(keywords)}`, context);
       const snapshot = await pageSnapshot(page);
       const state = pageState(snapshot);
       this.observeSession(state.authenticated, state.reason, state.code);
-      return state.blocked ? [] : searchRows(page);
-    });
+      throwForBlockedState(state);
+      return searchRows(page);
+    }, operation, 'company_internal_search');
   }
 
-  async withPage(task) {
-    return this.enqueue(async () => {
-      const browser = await this.ensureBrowser();
-      const page = await browser.newPage();
-      page.setDefaultNavigationTimeout(this.options.navigationTimeoutMs);
-      page.setDefaultTimeout(this.options.navigationTimeoutMs);
-      await page.setViewport({ width: 1365, height: 900, deviceScaleFactor: 1 });
-      await page.setExtraHTTPHeaders({ 'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8' });
-      try {
-        return await task(page);
-      } finally {
-        await page.close().catch(() => undefined);
-      }
-    });
+  async withPage(task, operation, stage = 'browser_page') {
+    const { context, owned } = this.operationContext(operation);
+    try {
+      return await this.queue.enqueue(async () => {
+        context.throwIfUnavailable();
+        const browser = await this.ensureBrowser(context);
+        context.throwIfUnavailable();
+        const page = await waitForAbortableResource(
+          () => browser.newPage(),
+          context,
+          closeResource,
+        );
+        const closeOnAbort = () => disposeResource(page, closeResource);
+        context.signal.addEventListener('abort', closeOnAbort, { once: true });
+        try {
+          context.throwIfUnavailable();
+          page.setDefaultNavigationTimeout(this.options.navigationTimeoutMs);
+          page.setDefaultTimeout(this.options.navigationTimeoutMs);
+          await page.setViewport({ width: 1365, height: 900, deviceScaleFactor: 1 });
+          await page.setExtraHTTPHeaders({ 'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8' });
+          return await context.stage(stage, () => task(page, context));
+        } catch (error) {
+          throw asOperationError(error, context);
+        } finally {
+          context.signal.removeEventListener('abort', closeOnAbort);
+          await page.close().catch(() => undefined);
+        }
+      }, { context, operation: stage });
+    } finally {
+      if (owned) context.dispose();
+    }
   }
 
-  async ensureBrowser() {
+  async ensureBrowser(context) {
     if (this.browser?.connected) return this.browser;
-    await mkdir(this.options.profileDirectory, { recursive: true });
-    this.browser = await puppeteer.launch({
-      headless: this.options.headless,
-      userDataDir: this.options.profileDirectory,
-      executablePath: this.options.executablePath,
-      defaultViewport: { width: 1365, height: 900 },
-      args: ['--lang=pt-BR', '--disable-dev-shm-usage'],
-    });
-    this.browser.on('disconnected', () => {
-      this.browser = undefined;
+    context?.throwIfUnavailable();
+    let browser;
+    try {
+      await mkdir(this.options.profileDirectory, { recursive: true });
+      browser = await waitForAbortableResource(
+        () => this.launchBrowser({
+          headless: this.options.headless,
+          userDataDir: this.options.profileDirectory,
+          executablePath: this.options.executablePath,
+          defaultViewport: { width: 1365, height: 900 },
+          args: ['--lang=pt-BR', '--disable-dev-shm-usage'],
+        }),
+        context,
+        closeResource,
+      );
+      context?.throwIfUnavailable();
+    } catch (error) {
+      if (browser) disposeResource(browser, closeResource);
+      if (!context?.signal?.aborted && isTimeoutFailure(error)) {
+        throw new WorkerOperationError('worker_unavailable', undefined, { cause: error });
+      }
+      throw asOperationError(error, context, 'worker_unavailable');
+    }
+    this.browser = browser;
+    browser.on('disconnected', () => {
+      if (this.browser === browser) this.browser = undefined;
       this.sessionState = 'disconnected';
     });
-    return this.browser;
+    return browser;
   }
 
-  async navigate(page, url) {
-    const waitMs = this.options.minDelayMs - (Date.now() - this.lastNavigationAt);
-    if (waitMs > 0) await delay(waitMs);
-    this.lastNavigationAt = Date.now();
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.options.navigationTimeoutMs });
-    await delay(900);
-  }
-
-  enqueue(task) {
-    const result = this.queueTail.then(task, task);
-    this.queueTail = result.then(() => undefined, () => undefined);
-    return result;
+  async navigate(page, url, operation) {
+    const context = operation instanceof OperationContext ? operation : this.operationContext(operation).context;
+    const waitMs = Math.max(0, this.options.minDelayMs - (this.now() - this.lastNavigationAt));
+    context.throwIfUnavailable(waitMs + this.options.minNavigationBudgetMs);
+    if (waitMs > 0) await context.wait(waitMs);
+    context.throwIfUnavailable(this.options.minNavigationBudgetMs);
+    this.lastNavigationAt = this.now();
+    const timeout = Math.max(1, Math.min(this.options.navigationTimeoutMs, context.remainingMs()));
+    await context.stage('navigation', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout }));
+    context.throwIfUnavailable();
+    if (this.options.postNavigationDelayMs > 0) await context.wait(this.options.postNavigationDelayMs);
   }
 
   observeSession(authenticated, error, code) {
@@ -387,13 +459,61 @@ export class LinkedinBrowserWorker {
     this.lastOperation = operation;
     this.lastCheckedAt = new Date().toISOString();
     if (success) this.lastSuccessAt = this.lastCheckedAt;
-    this.lastError = success ? undefined : error || this.lastError;
+    this.lastError = success ? undefined : sanitizeError(error) || this.lastError;
   }
 
   async close() {
-    await this.queueTail;
+    await this.queue.onIdle();
     await this.browser?.close().catch(() => undefined);
     await this.cache.close();
+  }
+
+  operationContext(operation) {
+    if (operation instanceof OperationContext) return { context: operation, owned: false };
+    return {
+      context: createOperationContext({
+        ...operation,
+        defaultTimeoutMs: this.options.operationTimeoutMs,
+        maxTimeoutMs: this.options.maxOperationTimeoutMs,
+        now: this.now,
+      }),
+      owned: true,
+    };
+  }
+
+  async executeOperation(name, operation, action) {
+    const { context, owned } = this.operationContext(operation);
+    try {
+      context.throwIfUnavailable();
+      const result = await context.stage(name, () => action(context));
+      const success = result?.success ?? result?.ok ?? true;
+      this.recordOperation(name, success, result?.error ?? result?.reason);
+      this.emitOperationLog(name, context, success, result?.errorCode);
+      return result;
+    } catch (error) {
+      const typed = asOperationError(error, context);
+      this.recordOperation(name, false, typed.message);
+      this.emitOperationLog(name, context, false, typed.code);
+      throw typed;
+    } finally {
+      if (owned) context.dispose();
+    }
+  }
+
+  emitOperationLog(operation, context, success, errorCode) {
+    this.log({
+      event: 'linkedin_worker_operation',
+      requestId: context.requestId,
+      operation,
+      success: Boolean(success),
+      errorCode: errorCode || undefined,
+      durationMs: context.elapsedMs(),
+      queueWaitMs: context.queueWaitMs,
+      remainingMs: context.remainingMs(),
+      stages: Object.fromEntries(context.stageDurations),
+      mode: this.options.mode,
+      extractorVersion: this.options.extractorVersion,
+    });
   }
 }
 
@@ -481,28 +601,88 @@ async function experienceRows(page) {
   });
 }
 
-async function autoScroll(page) {
+async function autoScroll(page, context) {
+  context?.throwIfUnavailable();
   await page.evaluate(async () => {
     for (let index = 0; index < 3; index += 1) {
       window.scrollBy(0, Math.max(500, window.innerHeight * 0.8));
       await new Promise((resolve) => setTimeout(resolve, 350));
     }
   });
+  context?.throwIfUnavailable();
 }
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function throwForBlockedState(state) {
+  if (!state?.blocked) return;
+  throw new WorkerOperationError(state.code || 'navigation_error');
 }
 
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
+function throwForBlockedCode(code) {
+  if (['auth_required', 'challenge', 'navigation_error'].includes(code)) {
+    throw new WorkerOperationError(code);
+  }
 }
 
-function shouldCacheWorkerResult(result) {
-  const code = result?.errorCode;
-  return !['auth_required', 'challenge', 'navigation_error', 'worker_unavailable', 'wrong_worker'].includes(code);
+function loggerFunction(logger) {
+  if (typeof logger === 'function') return logger;
+  if (typeof logger?.info === 'function') return (event) => logger.info(JSON.stringify(event));
+  return () => undefined;
+}
+
+function sanitizeError(error) {
+  const value = error instanceof Error ? error.message : String(error ?? '');
+  return value
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')
+    .replace(/\b\+?\d[\d ().-]{8,}\d\b/g, '[phone]')
+    .replace(/([?&](?:token|code|session|auth)[^=]*=)[^&\s]+/gi, '$1[redacted]')
+    .slice(0, 240) || undefined;
+}
+
+function waitForAbortableResource(createResource, context, dispose) {
+  context?.throwIfUnavailable();
+  const signal = context?.signal;
+  const resourcePromise = Promise.resolve().then(createResource);
+  if (!signal) return resourcePromise;
+
+  return new Promise((resolve, reject) => {
+    let completed = false;
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const finish = (action) => {
+      if (completed) return false;
+      completed = true;
+      cleanup();
+      action();
+      return true;
+    };
+    const onAbort = () => finish(() => reject(errorFromAbortSignal(signal)));
+
+    signal.addEventListener('abort', onAbort, { once: true });
+    resourcePromise.then(
+      (resource) => {
+        if (!finish(() => resolve(resource))) disposeResource(resource, dispose);
+      },
+      (error) => {
+        finish(() => reject(error));
+      },
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
+function disposeResource(resource, dispose) {
+  void Promise.resolve()
+    .then(() => dispose(resource))
+    .catch(() => undefined);
+}
+
+function closeResource(resource) {
+  return resource?.close?.();
+}
+
+function isTimeoutFailure(error) {
+  return error?.name === 'TimeoutError' || /timed?\s*out|timeout/i.test(String(error?.message ?? ''));
 }

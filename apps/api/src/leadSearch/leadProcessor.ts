@@ -16,6 +16,7 @@ import {
   ContactEvidenceLevel,
   DecisionMakerMatch,
   LeadCrossMatch,
+  LeadProcessingContext,
   LeadProcessingOutcome,
   LeadProcessor,
   LeadSearch,
@@ -63,9 +64,10 @@ interface QualityRequirements {
 }
 
 export class EnrichmentLeadProcessor implements LeadProcessor {
-  async process(search: LeadSearch, candidate: ReceitaCompany): Promise<LeadProcessingOutcome> {
+  async process(search: LeadSearch, candidate: ReceitaCompany, context?: LeadProcessingContext): Promise<LeadProcessingOutcome> {
     if (!env.linkedinEnabled) return evaluateEnrichedLead(search, candidate, localLeadFromCandidate(candidate));
 
+    const minQuality = search.minQuality ?? minQualityFromScore(search.minScore ?? 0);
     const enriched = await enrichCompany({
       cnpj: candidate.cnpj,
       razaoSocial: candidate.legalName,
@@ -78,6 +80,22 @@ export class EnrichmentLeadProcessor implements LeadProcessor {
       cidade: candidate.city,
       uf: candidate.uf,
       cnae: candidate.cnae,
+    }, {
+      minQuality,
+      requireEmail: search.requireEmail,
+      requirePhone: search.requirePhone,
+      onlyMobilePhone: search.onlyMobilePhone,
+      emailType: search.emailType,
+      excludeGenericContacts: search.excludeGenericContacts,
+      requireNamedEmail: search.requireNamedEmail,
+      requireDecisionMakerMatch: search.requireDecisionMakerMatch || (search.matchConfidenceLevel ?? 'normal') !== 'normal',
+      requireRealDecisionMaker: search.requireRealDecisionMaker,
+      requireDecisionMakerProfile: search.requireDecisionMakerProfile,
+      requireDecisionMakerContact: search.requireDecisionMakerContact,
+      requireDecisionMakerPhone: search.requireDecisionMakerPhone,
+      signal: context?.signal,
+      requestId: context?.requestId,
+      deadline: context?.deadline,
     });
 
     if (!enriched.lead) {

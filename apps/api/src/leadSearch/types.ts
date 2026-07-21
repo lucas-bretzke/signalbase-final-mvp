@@ -199,8 +199,14 @@ export interface LeadProcessingOutcome {
   crossMatch?: LeadCrossMatch;
 }
 
+export interface LeadProcessingContext {
+  signal?: AbortSignal;
+  requestId?: string;
+  deadline?: number;
+}
+
 export interface LeadProcessor {
-  process(search: LeadSearch, candidate: ReceitaCompany): Promise<LeadProcessingOutcome>;
+  process(search: LeadSearch, candidate: ReceitaCompany, context?: LeadProcessingContext): Promise<LeadProcessingOutcome>;
 }
 
 export interface RepositoryPage<T> {
@@ -212,6 +218,11 @@ export interface LeadSearchRepositoryListOptions {
   offset: number;
   limit: number;
   statuses?: LeadSearchStatus[];
+}
+
+export interface RecordProcessedOptions {
+  expectedStatus?: LeadSearchStatus;
+  signal?: AbortSignal;
 }
 
 export interface LeadSearchResultRepositoryListOptions {
@@ -226,9 +237,14 @@ export interface LeadSearchRepository {
   createSearch(search: LeadSearch): Promise<LeadSearch>;
   getSearch(id: string): Promise<LeadSearch | undefined>;
   listSearches(options: LeadSearchRepositoryListOptions): Promise<RepositoryPage<LeadSearch>>;
-  updateSearch(id: string, update: Partial<LeadSearch>): Promise<LeadSearch>;
+  updateSearch(id: string, update: Partial<LeadSearch> | ((search: LeadSearch) => void)): Promise<LeadSearch>;
   deleteSearch(id: string): Promise<boolean>;
-  recordProcessed(searchId: string, result: LeadSearchResult, crossMatch?: LeadCrossMatch): Promise<LeadSearch>;
+  recordProcessed(
+    searchId: string,
+    result: LeadSearchResult,
+    crossMatch?: LeadCrossMatch,
+    options?: RecordProcessedOptions,
+  ): Promise<LeadSearch>;
   getResult(searchId: string, resultId: string): Promise<LeadSearchResult | undefined>;
   listResults(searchId: string, options: LeadSearchResultRepositoryListOptions): Promise<RepositoryPage<LeadSearchResult>>;
   setResultSelected(searchId: string, resultId: string, selected: boolean): Promise<LeadSearchResult | undefined>;

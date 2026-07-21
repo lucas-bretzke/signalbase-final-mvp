@@ -179,14 +179,24 @@ Quando o índice composto ainda não existe, a criação responde sem uma varred
 | `RECEITA_CSV_PATH` | Caminho do CSV consolidado/fictício quando `RECEITA_SOURCE=csv`. |
 | `LEAD_SEARCH_DB_PATH` | Arquivo JSON operacional separado, com buscas, resultados e cross-matches. |
 | `LEAD_SEARCH_BATCH_SIZE` | Quantidade de candidatas lidas por lote interno. |
+| `API_PROXY_TARGET` | Destino server-side do proxy Vite em desenvolvimento; padrão `http://127.0.0.1:7001`. |
+| `API_CORS_ORIGINS` | Origens web autorizadas a chamar a API diretamente; por padrão, apenas Vite local em `localhost`/`127.0.0.1:5173`. |
 | `LINKEDIN_ENABLED` | Liga ou desliga completamente o cruzamento e a disponibilidade de `muito alto`. |
 | `LINKEDIN_WORKER_MODE` | `demo` ou `real`. |
 | `WORKER_URL` | URL interna/externa do worker Puppeteer. |
+| `REQUEST_TIMEOUT_MS` / `LEAD_OPERATION_TIMEOUT_MS` | Orçamentos da chamada HTTP e da candidata completa; defaults de 120.000 ms. |
+| `WORKER_OPERATION_TIMEOUT_MS` / `WORKER_MAX_OPERATION_TIMEOUT_MS` | Deadline padrão (110.000 ms) e teto aceito (300.000 ms) pelo worker. |
+| `WORKER_MIN_NAVIGATION_BUDGET_MS` | Margem mínima restante antes de iniciar outra navegação; padrão de 5.000 ms. |
+| `WORKER_QUEUE_WAIT_TIMEOUT_MS` / `WORKER_MAX_QUEUE_DEPTH` | Espera máxima e backpressure da fila serial; defaults de 30.000 ms e 8 itens. |
 | `LINKEDIN_BROWSER_PROFILE_DIR` | Diretório persistente da sessão do navegador. |
 | `LINKEDIN_CACHE_PATH` | Cache de páginas, perfis e decisões já pesquisadas. |
+| `PUPPETEER_CACHE_TTL_HOURS` | TTL de sucessos verificados; padrão de 168 horas. |
+| `PUPPETEER_NEGATIVE_CACHE_TTL_MINUTES` / `PUPPETEER_EMPTY_CACHE_TTL_MINUTES` | TTL curto de resultados negativos e contatos vazios; padrão de 15 minutos. |
 | `PUPPETEER_EXECUTABLE_PATH` | Chrome/Chromium do host, quando a detecção automática não for suficiente. |
 | `MAX_BATCH_SIZE` | Proteção de tamanho de lote do enriquecimento interno. |
-| `ENRICH_CONCURRENCY` / `WORKER_CONCURRENCY` | Limites de paralelismo. |
+| `ENRICH_CONCURRENCY` / `WORKER_CONCURRENCY` | Limites de paralelismo; o acesso ao navegador permanece serial e o default conservador da API é 1. |
+
+No Docker Compose, a porta do worker é publicada apenas em `127.0.0.1`; a API continua acessando-o pela rede interna em `http://worker:8010`. O worker não habilita CORS para chamadas diretas do navegador.
 
 Veja todas as opções em [.env.example](./.env.example).
 

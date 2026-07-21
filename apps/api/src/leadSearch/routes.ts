@@ -1,7 +1,7 @@
 import { stringify } from 'csv-stringify/sync';
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { env } from '../env.js';
-import { testLinkedinSession } from '../workerClient.js';
+import { testLinkedinSession, workerHealth } from '../workerClient.js';
 import { resultSelectionSchema, leadSearchCreateSchema } from '../validation.js';
 import { LeadSearchService } from './service.js';
 import { LeadSearchResultStatus, LeadSearchStatus } from './types.js';
@@ -17,18 +17,38 @@ function registerPrefix(app: FastifyInstance, service: LeadSearchService, prefix
   app.post(`${prefix}/lead-searches`, async (request, reply) => {
     const parsed = leadSearchCreateSchema.safeParse(request.body);
     if (!parsed.success) return invalidPayload(reply, parsed.error.flatten());
-    if (!env.linkedinEnabled && parsed.data.minQuality === 'muito_alto') {
+    const needsLinkedinReady = requiresLinkedinReady(parsed.data);
+    if (!env.linkedinEnabled && needsLinkedinReady) {
       return reply.status(400).send({
         ok: false,
-        error: 'Qualidade muito alta exige o cruzamento com LinkedIn. Ative LINKEDIN_ENABLED=true.',
+        error: 'Os filtros selecionados exigem o cruzamento com LinkedIn. Ative LINKEDIN_ENABLED=true.',
       });
+    }
+    if (needsLinkedinReady) {
+      const diagnostic = await workerHealth({ requestId: request.id });
+      if (diagnostic.ready !== true) {
+        return reply.status(503).send({
+          ok: false,
+          errorCode: diagnostic.errorCode ?? 'worker_unavailable',
+          error: 'O worker do LinkedIn nao esta pronto para os filtros selecionados.',
+          diagnostic: {
+            ready: false,
+            mode: env.workerMode,
+            sessionState: diagnostic.session_state ?? diagnostic.sessionState ?? 'not_checked',
+            errorCode: diagnostic.errorCode,
+          },
+        });
+      }
     }
     try {
       const search = await service.create(parsed.data);
       return reply.status(202).send({ search });
     } catch (error) {
-      request.log.error(error);
-      return reply.status(500).send({ ok: false, error: 'Nao foi possivel criar a busca.', details: errorMessage(error) });
+      request.log.error({
+        event: 'lead_search_create_failed',
+        errorType: error instanceof Error ? error.name : 'unknown',
+      }, 'Nao foi possivel criar a busca.');
+      return reply.status(500).send({ ok: false, error: 'Nao foi possivel criar a busca.' });
     }
   });
 
@@ -53,9 +73,15 @@ function registerPrefix(app: FastifyInstance, service: LeadSearchService, prefix
     const current = await service.get(id);
     if (!current) return notFound(reply, 'Busca nao encontrada.');
     if (current.status === 'blocked') {
-      const diagnostic = await testLinkedinSession();
+      const diagnostic = env.workerMode === 'demo'
+        ? await workerHealth({ requestId: request.id })
+        : await testLinkedinSession({ requestId: request.id });
       if (diagnostic.ready !== true) {
-        return reply.status(503).send({ ok: false, error: 'LinkedIn ainda nao esta pronto para retomar a busca.', diagnostic });
+        return reply.status(503).send({
+          ok: false,
+          error: 'LinkedIn ainda nao esta pronto para retomar a busca.',
+          diagnostic: publicWorkerDiagnostic(diagnostic),
+        });
       }
     }
     const search = await service.resume(id);
@@ -162,6 +188,37 @@ function registerPrefix(app: FastifyInstance, service: LeadSearchService, prefix
   });
 }
 
+function requiresLinkedinReady(filters: {
+  minQuality?: string;
+  requireDecisionMakerMatch?: boolean;
+  requireRealLinkedin?: boolean;
+  requireLinkedinCompanyData?: boolean;
+  requireRealDecisionMaker?: boolean;
+  requireDecisionMakerProfile?: boolean;
+  requireDecisionMakerContact?: boolean;
+  requireDecisionMakerPhone?: boolean;
+  matchConfidenceLevel?: string;
+}): boolean {
+  return filters.minQuality === 'muito_alto'
+    || filters.requireDecisionMakerMatch === true
+    || filters.requireRealLinkedin === true
+    || filters.requireLinkedinCompanyData === true
+    || filters.requireRealDecisionMaker === true
+    || filters.requireDecisionMakerProfile === true
+    || filters.requireDecisionMakerContact === true
+    || filters.requireDecisionMakerPhone === true
+    || (filters.matchConfidenceLevel !== undefined && filters.matchConfidenceLevel !== 'normal');
+}
+
+function publicWorkerDiagnostic(diagnostic: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ready: diagnostic.ready === true,
+    mode: env.workerMode,
+    sessionState: diagnostic.session_state ?? diagnostic.sessionState ?? 'not_checked',
+    errorCode: diagnostic.errorCode,
+  };
+}
+
 function paginationFrom(query: Record<string, unknown>): { page: number; pageSize: number } | undefined {
   const page = positiveInteger(query.page, 1);
   const pageSize = positiveInteger(query.pageSize, 25);
@@ -201,8 +258,4 @@ function notFound(reply: FastifyReply, error: string) {
 function safeCsv(value: unknown): string {
   const text = String(value ?? '');
   return /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

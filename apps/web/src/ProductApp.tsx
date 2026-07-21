@@ -55,6 +55,8 @@ function ProductApp() {
   const [loadingSearches, setLoadingSearches] = useState(true);
   const [globalError, setGlobalError] = useState<string>();
   const [linkedinDiagnostic, setLinkedinDiagnostic] = useState<LinkedinDiagnostic>({ ok: false, ready: false, sessionState: 'not_checked' });
+  const [linkedinConfigured, setLinkedinConfigured] = useState<boolean | undefined>();
+  const [linkedinReady, setLinkedinReady] = useState(false);
   const [diagnosticOpen, setDiagnosticOpen] = useState(false);
   const [testingLinkedin, setTestingLinkedin] = useState(false);
 
@@ -90,9 +92,12 @@ function ProductApp() {
   const loadLinkedinDiagnostic = useCallback(async () => {
     try {
       const capabilities = await getAppCapabilities();
+      setLinkedinConfigured(capabilities.linkedin.enabled);
+      setLinkedinReady(capabilities.linkedin.enabled && capabilities.linkedin.ready && capabilities.quality.muito_alto);
       setLinkedinDiagnostic({
         ok: capabilities.linkedin.implementation === 'puppeteer' || capabilities.linkedin.mode === 'demo',
         ready: capabilities.linkedin.ready,
+        enabled: capabilities.linkedin.enabled,
         implementation: capabilities.linkedin.implementation,
         mode: capabilities.linkedin.mode,
         runtimeMode: capabilities.linkedin.runtimeMode,
@@ -103,6 +108,8 @@ function ProductApp() {
         errorCode: capabilities.linkedin.errorCode,
       });
     } catch (error) {
+      setLinkedinConfigured(undefined);
+      setLinkedinReady(false);
       setLinkedinDiagnostic({ ok: false, ready: false, error: errorMessage(error), errorCode: 'worker_unavailable' });
     }
   }, []);
@@ -115,8 +122,14 @@ function ProductApp() {
 
   async function runLinkedinTest() {
     setTestingLinkedin(true);
-    try { setLinkedinDiagnostic(await testLinkedin()); }
-    catch (error) { setLinkedinDiagnostic({ ok: false, ready: false, error: errorMessage(error), errorCode: 'worker_unavailable' }); }
+    try {
+      setLinkedinDiagnostic(await testLinkedin());
+      await loadLinkedinDiagnostic();
+    }
+    catch (error) {
+      setLinkedinReady(false);
+      setLinkedinDiagnostic({ ok: false, ready: false, error: errorMessage(error), errorCode: 'worker_unavailable' });
+    }
     finally { setTestingLinkedin(false); }
   }
 
@@ -193,7 +206,7 @@ function ProductApp() {
             <DashboardPage searches={searches} loading={loadingSearches} navigate={navigate} />
           )}
           {route.view === 'new-search' && (
-            <NewSearchPage onCreated={(search) => {
+            <NewSearchPage linkedinConfigured={linkedinConfigured} linkedinReady={linkedinReady} onCreated={(search) => {
               setSearches((items) => [search, ...items.filter((item) => item.id !== search.id)]);
               navigate('review', search.id);
             }} />
@@ -218,7 +231,7 @@ function ProductApp() {
         <div className="diagnostic-backdrop" role="presentation" onClick={() => setDiagnosticOpen(false)}>
           <section className="diagnostic-dialog" role="dialog" aria-modal="true" aria-label="Diagnóstico do LinkedIn" onClick={(event) => event.stopPropagation()}>
             <div className="diagnostic-title"><div><span className={`health-dot ${linkedinStatusOf(linkedinDiagnostic).tone}`} /><strong>{linkedinStatusOf(linkedinDiagnostic).label}</strong></div><button className="icon-button" onClick={() => setDiagnosticOpen(false)} aria-label="Fechar">×</button></div>
-            <dl><div><dt>Implementação</dt><dd>{linkedinDiagnostic.implementation || 'Indisponível'}</dd></div><div><dt>Modo</dt><dd>{linkedinDiagnostic.runtimeMode || linkedinDiagnostic.mode || 'Desconhecido'}</dd></div><div><dt>Sessão</dt><dd>{linkedinDiagnostic.sessionState || linkedinDiagnostic.session_state || 'Não testada'}</dd></div><div><dt>Navegador</dt><dd>{linkedinDiagnostic.headless === false ? 'Visível' : 'Oculto'}</dd></div><div><dt>Último teste</dt><dd>{formatDiagnosticDate(linkedinDiagnostic)}</dd></div></dl>
+            <dl><div><dt>Implementação</dt><dd>{linkedinDiagnostic.implementation || 'Indisponível'}</dd></div><div><dt>Modo</dt><dd>{linkedinDiagnostic.runtimeMode || linkedinDiagnostic.mode || 'Desconhecido'}</dd></div><div><dt>Sessão</dt><dd>{linkedinDiagnostic.sessionState || linkedinDiagnostic.session_state || 'Não testada'}</dd></div><div><dt>Navegador</dt><dd>{linkedinDiagnostic.headless === undefined ? 'Desconhecido' : linkedinDiagnostic.headless ? 'Oculto' : 'Visível'}</dd></div><div><dt>Último teste</dt><dd>{formatDiagnosticDate(linkedinDiagnostic)}</dd></div></dl>
             {(linkedinDiagnostic.lastError || linkedinDiagnostic.last_error || linkedinDiagnostic.error) && <div className="diagnostic-error">{linkedinDiagnostic.lastError || linkedinDiagnostic.last_error || linkedinDiagnostic.error}</div>}
             <button className="button primary full" disabled={testingLinkedin} onClick={() => void runLinkedinTest()}>{testingLinkedin ? 'Testando conexão…' : 'Testar LinkedIn'}</button>
           </section>
@@ -287,7 +300,11 @@ function DashboardPage({ searches, loading, navigate }: {
   );
 }
 
-function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void }) {
+function NewSearchPage({ linkedinConfigured, linkedinReady, onCreated }: {
+  linkedinConfigured: boolean | undefined;
+  linkedinReady: boolean;
+  onCreated: (search: LeadSearch) => void;
+}) {
   const [uf, setUf] = useState('SC');
   const [city, setCity] = useState('');
   const [rawCnaes, setRawCnaes] = useState('7311400, 7319002');
@@ -295,52 +312,39 @@ function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void 
   const [minQuality, setMinQuality] = useState<LeadQualityLevel>('alto');
   const [requirePhone, setRequirePhone] = useState(true);
   const [requireEmail, setRequireEmail] = useState(false);
-  const [requireDecisionMakerMatch, setRequireDecisionMakerMatch] = useState(true);
+  const [requireDecisionMakerMatch, setRequireDecisionMakerMatch] = useState(false);
   const [onlyMobilePhone, setOnlyMobilePhone] = useState(false);
   const [emailType, setEmailType] = useState<EmailTypeFilter>('any');
   const [excludeGenericContacts, setExcludeGenericContacts] = useState(true);
-  const [linkedinEnabled, setLinkedinEnabled] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const cnaes = useMemo(() => parseCnaes(rawCnaes), [rawCnaes]);
   const invalidCnaes = useMemo(() => rawCnaes.split(/[\s,;]+/).filter(Boolean).filter((value) => value.replace(/\D/g, '').length !== 7), [rawCnaes]);
   const effectiveRequireEmail = requireEmail || emailType !== 'any';
   const qualityHint = qualityLevelHint(minQuality);
-  const qualityRules = qualityRuleLabels(minQuality, linkedinEnabled);
+  const qualityRules = qualityRuleLabels(minQuality, linkedinReady);
+  const linkedinUnavailableText = linkedinConfigured === false
+    ? 'Ative LINKEDIN_ENABLED para disponibilizar este recurso.'
+    : linkedinConfigured === true
+      ? 'O worker do LinkedIn ainda nao esta pronto.'
+      : 'Nao foi possivel confirmar a disponibilidade do worker do LinkedIn.';
   const citySearch = Boolean(city.trim());
   const targetIsMax = targetQuantityInput.trim().toLowerCase() === 'max';
   const parsedTargetQuantity = Number(targetQuantityInput);
   const targetQuantity = targetIsMax ? 0 : parsedTargetQuantity;
   const targetLabel = targetIsMax ? 'max' : (Number.isFinite(parsedTargetQuantity) && parsedTargetQuantity > 0 ? formatNumber(parsedTargetQuantity) : '0');
 
-  useEffect(() => {
-    let active = true;
-    void getAppCapabilities()
-      .then((capabilities) => {
-        if (!active) return;
-        const enabled = capabilities.linkedin.enabled && capabilities.quality.muito_alto;
-        setLinkedinEnabled(enabled);
-        if (!enabled) {
-          setMinQuality((current) => current === 'muito_alto' ? 'alto' : current);
-          setRequireDecisionMakerMatch(false);
-        }
-      })
-      .catch(() => {
-        if (!active) return;
-        setLinkedinEnabled(false);
-        setMinQuality((current) => current === 'muito_alto' ? 'alto' : current);
-        setRequireDecisionMakerMatch(false);
-      });
-    return () => { active = false; };
-  }, []);
-
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError(undefined);
     if (!UFS.includes(uf)) return setError('Selecione uma UF válida.');
     if (!cnaes.length || invalidCnaes.length) return setError('Informe ao menos um CNAE válido com sete dígitos.');
+    if (cnaes.length > 50) return setError('Informe no máximo 50 CNAEs por busca.');
     if (!targetIsMax && (!Number.isInteger(parsedTargetQuantity) || parsedTargetQuantity < 1)) return setError('A quantidade desejada deve ser um número maior que zero ou max.');
-    if (!linkedinEnabled && minQuality === 'muito_alto') return setError('Qualidade muito alta exige o cruzamento com LinkedIn ativo.');
+    if (!targetIsMax && parsedTargetQuantity > 10_000) return setError('A quantidade desejada deve ser de no máximo 10.000 leads.');
+    if (!linkedinReady && (minQuality === 'muito_alto' || requireDecisionMakerMatch)) {
+      return setError('Os criterios selecionados exigem o worker do LinkedIn pronto. Suas escolhas foram preservadas.');
+    }
     const input: CreateLeadSearchInput = {
       uf, city: city.trim() || undefined, cnaes, targetQuantity: targetIsMax ? 'max' : targetQuantity, targetMode: targetIsMax ? 'max' : 'fixed', minQuality,
       requirePhone, requireEmail, requireDecisionMakerMatch,
@@ -379,12 +383,12 @@ function NewSearchPage({ onCreated }: { onCreated: (search: LeadSearch) => void 
             <SectionTitle number="03" title="O que conta como um lead válido?" text="A meta só avança quando todos os critérios selecionados forem atendidos." />
             <div className="field-grid two quantity-fields">
               <label className="field"><span>Quantidade desejada <b>*</b></span><div className="input-suffix"><input value={targetQuantityInput} onChange={(event) => setTargetQuantityInput(event.target.value)} placeholder="100 ou max" /><i>{targetIsMax ? 'tudo' : 'contatos'}</i></div><small>Use max para processar todas as candidatas {citySearch ? 'da cidade' : 'do estado'}; país inteiro ainda não.</small></label>
-              <label className="field"><span>Qualidade mínima <em>opcional</em></span><div className="quality-control" role="group" aria-label="Qualidade mínima">{(['baixo', 'medio', 'alto', 'muito_alto'] as LeadQualityLevel[]).map((level) => { const unavailable = level === 'muito_alto' && !linkedinEnabled; return <button key={level} type="button" className={minQuality === level ? 'active' : ''} disabled={unavailable} title={unavailable ? 'Ative LINKEDIN_ENABLED para usar este nível.' : undefined} onClick={() => setMinQuality(level)}>{qualityLevelLabel(level)}</button>; })}</div><small>{linkedinEnabled ? 'Leads abaixo deste nível são rejeitados.' : 'Muito alto fica disponível quando o cruzamento com LinkedIn está ativo.'}</small><div className={`score-impact ${qualityHint.tone}`}><span><i style={{ width: `${qualityHint.coverage}%` }} /></span><strong>{qualityHint.label}</strong><small>{qualityHint.text}</small></div><div className="quality-rules"><strong>{linkedinEnabled ? 'Automático no modo real' : 'Validação sem LinkedIn'}</strong>{qualityRules.map((rule) => <small key={rule}>{rule}</small>)}</div></label>
+              <label className="field"><span>Qualidade mínima <em>opcional</em></span><div className="quality-control" role="group" aria-label="Qualidade mínima">{(['baixo', 'medio', 'alto', 'muito_alto'] as LeadQualityLevel[]).map((level) => { const unavailable = level === 'muito_alto' && !linkedinReady; return <button key={level} type="button" className={minQuality === level ? 'active' : ''} disabled={unavailable} title={unavailable ? linkedinUnavailableText : undefined} onClick={() => setMinQuality(level)}>{qualityLevelLabel(level)}</button>; })}</div><small>{linkedinReady ? 'Leads abaixo deste nível são rejeitados.' : linkedinUnavailableText}</small><div className={`score-impact ${qualityHint.tone}`}><span><i style={{ width: `${qualityHint.coverage}%` }} /></span><strong>{qualityHint.label}</strong><small>{qualityHint.text}</small></div><div className="quality-rules"><strong>{linkedinReady ? 'Automático com LinkedIn' : 'Validação sem LinkedIn pronto'}</strong>{qualityRules.map((rule) => <small key={rule}>{rule}</small>)}</div></label>
             </div>
             <div className="check-grid">
               <CheckCard checked={requirePhone} onChange={setRequirePhone} icon="☎" title="Exigir telefone" text="Só aceita lead com número tecnicamente válido." />
               <CheckCard checked={effectiveRequireEmail} onChange={(value) => { setRequireEmail(value); if (!value) setEmailType('any'); }} icon="@" title="Exigir e-mail" text="Só aceita lead com endereço tecnicamente válido." />
-              <CheckCard checked={requireDecisionMakerMatch} onChange={setRequireDecisionMakerMatch} disabled={!linkedinEnabled} icon="≋" title="Decisor validado" text={linkedinEnabled ? 'Exige correspondência entre sócio e decisor.' : 'Disponível quando o LinkedIn estiver ativo.'} />
+              <CheckCard checked={requireDecisionMakerMatch} onChange={setRequireDecisionMakerMatch} disabled={!linkedinReady && !requireDecisionMakerMatch} icon="≋" title="Decisor validado" text={linkedinReady ? 'Exige correspondência entre sócio e decisor.' : linkedinUnavailableText} />
             </div>
             <details className="advanced-filters">
               <summary>Filtros avançados <span>Mais precisão para os contatos finais</span></summary>
@@ -428,7 +432,13 @@ function SearchesPage({ searches, loading, onRefresh, navigate, onSearchUpdate, 
   const [filter, setFilter] = useState('all');
   const [actionId, setActionId] = useState<string>();
   const [actionError, setActionError] = useState<string>();
-  const shown = searches.filter((item) => filter === 'all' || (filter === 'processing' ? isActive(item.status) : statusKey(item.status) === filter));
+  const shown = searches.filter((item) => {
+    if (filter === 'all') return true;
+    if (filter === 'processing') return isActive(item.status);
+    if (filter === 'exhausted') return poolExhausted(item);
+    if (filter === 'completed') return statusKey(item.status) === 'completed' && !poolExhausted(item);
+    return statusKey(item.status) === filter;
+  });
   async function pauseSearch(search: LeadSearch) {
     setActionId(search.id); setActionError(undefined);
     try { onSearchUpdate(await pauseLeadSearch(search.id)); }
@@ -719,6 +729,7 @@ function statusKey(status: string): string { return String(status || '').toLower
 function isActive(status: string): boolean { return ['pending', 'queued', 'running', 'processing', 'selecting_candidates', 'enriching'].includes(statusKey(status)); }
 function linkedinStatusOf(value: LinkedinDiagnostic): { label: string; tone: string } {
   const state = value.sessionState || value.session_state;
+  if (value.enabled === false) return { label: 'LinkedIn · Desativado', tone: 'unknown' };
   if (value.mode === 'demo' || value.runtimeMode === 'demo' || state === 'demo') return { label: 'LinkedIn · Demo', tone: 'demo' };
   if (value.ready && (value.authenticated || state === 'authenticated')) return { label: 'LinkedIn · Real conectado', tone: 'ready' };
   if (state === 'login_required' || value.errorCode === 'auth_required') return { label: 'LinkedIn · Login necessário', tone: 'error' };

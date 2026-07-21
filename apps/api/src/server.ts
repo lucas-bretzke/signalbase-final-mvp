@@ -6,12 +6,13 @@ import { fileURLToPath } from 'node:url';
 import { env, findWebDist } from './env.js';
 import { enrichBatch } from './enrich.js';
 import { batchRequestSchema } from './validation.js';
-import { testLinkedinSession, workerHealth } from './workerClient.js';
+import { isWorkerClientError, testLinkedinSession, workerHealth } from './workerClient.js';
 import { JsonLeadSearchRepository } from './leadSearch/jsonRepository.js';
 import { EnrichmentLeadProcessor } from './leadSearch/leadProcessor.js';
 import { createReceitaCompanySource } from './leadSearch/receitaSourceFactory.js';
 import { registerLeadSearchRoutes } from './leadSearch/routes.js';
 import { LeadSearchService } from './leadSearch/service.js';
+import { WorkerErrorCode } from './types.js';
 
 export interface BuildServerOptions {
   leadSearchService?: LeadSearchService;
@@ -25,7 +26,12 @@ export function buildServer(options: BuildServerOptions = {}) {
     },
   });
 
-  app.register(cors, { origin: true });
+  const allowedOrigins = new Set(env.apiCorsOrigins);
+  app.register(cors, {
+    origin(origin, callback) {
+      callback(null, !origin || allowedOrigins.has(origin));
+    },
+  });
 
   const leadSearchService = options.leadSearchService ?? new LeadSearchService(
     new JsonLeadSearchRepository(env.leadSearchDbPath),
@@ -82,13 +88,16 @@ export function buildServer(options: BuildServerOptions = {}) {
         implementation: String(worker.implementation ?? ''),
         runtimeMode: String(worker.runtimeMode ?? worker.mode ?? env.workerMode),
         sessionState: String(worker.session_state ?? worker.sessionState ?? 'not_checked'),
-        headless: worker.headless === true,
+        headless: typeof worker.headless === 'boolean' ? worker.headless : undefined,
         lastCheckedAt: worker.last_checked_at ?? worker.lastCheckedAt,
         lastError: worker.last_error ?? worker.lastError ?? worker.error,
         errorCode: worker.errorCode,
       },
       quality: {
-        muito_alto: env.linkedinEnabled && worker.ok === true && worker.mode === env.workerMode,
+        muito_alto: env.linkedinEnabled
+          && worker.ok === true
+          && worker.ready === true
+          && worker.mode === env.workerMode,
       },
     };
   });
@@ -114,8 +123,17 @@ export function buildServer(options: BuildServerOptions = {}) {
     if (!parsed.success) {
       return reply.status(400).send({ ok: false, error: 'Payload invalido', details: parsed.error.flatten() });
     }
-    const result = await enrichBatch(parsed.data);
-    return result;
+    try {
+      return await enrichBatch(parsed.data);
+    } catch (error) {
+      if (!isWorkerClientError(error)) throw error;
+      return reply.status(workerErrorHttpStatus(error.code)).send({
+        ok: false,
+        errorCode: error.code,
+        error: publicWorkerErrorMessage(error.code),
+        requestId: error.requestId,
+      });
+    }
   });
 
   const webDist = findWebDist();
@@ -133,6 +151,31 @@ export function buildServer(options: BuildServerOptions = {}) {
   }
 
   return app;
+}
+
+function workerErrorHttpStatus(code: WorkerErrorCode): number {
+  if (code === 'invalid_request') return 400;
+  if (code === 'auth_required') return 401;
+  if (code === 'challenge') return 409;
+  if (code === 'queue_full') return 429;
+  if (code === 'request_cancelled') return 499;
+  if (code === 'navigation_error' || code === 'network_error') return 502;
+  if (code === 'deadline_exceeded') return 504;
+  return 503;
+}
+
+function publicWorkerErrorMessage(code: WorkerErrorCode): string {
+  if (code === 'auth_required') return 'A sessao autorizada do LinkedIn precisa de login.';
+  if (code === 'challenge') return 'O LinkedIn solicitou verificacao manual.';
+  if (code === 'deadline_exceeded') return 'O prazo da operacao foi excedido.';
+  if (code === 'request_cancelled') return 'A operacao foi cancelada.';
+  if (code === 'queue_timeout') return 'O tempo maximo de espera na fila foi excedido.';
+  if (code === 'queue_full') return 'A fila do worker esta cheia.';
+  if (code === 'navigation_error') return 'A pagina nao pode ser carregada.';
+  if (code === 'network_error') return 'Falha transitoria de rede durante a operacao.';
+  if (code === 'invalid_request') return 'A requisicao enviada ao worker e invalida.';
+  if (code === 'wrong_worker') return 'O servico configurado nao e o worker esperado.';
+  return 'O worker do LinkedIn esta indisponivel.';
 }
 
 if (fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {

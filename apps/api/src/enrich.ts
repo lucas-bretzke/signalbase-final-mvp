@@ -2,9 +2,10 @@ import { enrichFromBrasilApi } from './brasilApi.js';
 import { env } from './env.js';
 import { ResolveResult, resolveLinkedInUrl } from './linkedinResolver.js';
 import { chooseBestDecisionMaker, classifyLead, passesQualityFilter } from './scoring.js';
-import { BatchRequest, CompanyInput, CompanyProfile, DecisionMaker, EnrichedLead, EnrichResponse } from './types.js';
-import { domainFromEmail, domainFromUrl, leadId, nonEmpty, normalizeCnpj, onlyDigits, safeArray, uniq } from './utils.js';
-import { extractCompany, searchDecisionMakers } from './workerClient.js';
+import { BatchRequest, CompanyInput, CompanyProfile, DecisionMaker, EnrichedLead, EnrichResponse, LeadQualityLevel, QualityFilter, WorkerErrorCode, WorkerRequestOptions } from './types.js';
+import { domainFromEmail, domainFromUrl, leadId, nonEmpty, normalizeCnpj, normalizeKey, onlyDigits, safeArray, uniq } from './utils.js';
+import { isCorporateEmail, isGenericEmail, isMobilePhone, isValidEmail, isValidPhone, splitContactValues } from './leadSearch/contactValidation.js';
+import { extractCompany, LinkedinBlockingError, searchDecisionMakers, WorkerClientError } from './workerClient.js';
 
 const DEFAULT_KEYWORDS = [
   'CEO',
@@ -19,6 +20,44 @@ const DEFAULT_KEYWORDS = [
 ];
 
 type DecisionSearchResult = Awaited<ReturnType<typeof searchDecisionMakers>>;
+
+export interface DecisionMakerSearchInput {
+  minQuality: LeadQualityLevel;
+  requireEmail?: boolean;
+  requirePhone?: boolean;
+  onlyMobilePhone?: boolean;
+  emailType?: 'any' | 'corporate' | 'non_corporate';
+  excludeGenericContacts?: boolean;
+  requireNamedEmail?: boolean;
+  requireDecisionMakerMatch?: boolean;
+  requireRealDecisionMaker?: boolean;
+  requireDecisionMakerProfile?: boolean;
+  requireDecisionMakerContact?: boolean;
+  requireDecisionMakerPhone?: boolean;
+}
+
+export interface DecisionMakerSearchEvidence {
+  hasValidContact?: boolean;
+  hasValidEmail?: boolean;
+  hasValidPhone?: boolean;
+  hasMobilePhone?: boolean;
+  hasCorporateEmail?: boolean;
+  hasNonCorporateEmail?: boolean;
+  hasNonGenericEmail?: boolean;
+  hasGenericEmail?: boolean;
+  hasVerifiedCompanyData?: boolean;
+  hasNamedPartnerEmail?: boolean;
+}
+
+export interface EnrichCompanyOptions extends Pick<BatchRequest, 'maxDecisionMakers' | 'keywords'>,
+  Partial<Omit<DecisionMakerSearchInput, 'minQuality'>>, WorkerRequestOptions {
+  minQuality?: LeadQualityLevel;
+}
+
+interface EnrichmentRequest extends BatchRequest {
+  decisionMakerSearch?: DecisionMakerSearchInput;
+  workerOptions?: WorkerRequestOptions;
+}
 
 interface BatchContext {
   brasilApiCache: Map<string, Promise<CompanyInput>>;
@@ -63,26 +102,79 @@ export async function enrichBatch(request: BatchRequest): Promise<EnrichResponse
 
 export async function enrichCompany(
   input: CompanyInput,
-  options: Pick<BatchRequest, 'maxDecisionMakers' | 'keywords'> = {},
+  options: EnrichCompanyOptions = {},
 ): Promise<LeadResult> {
+  const minQuality = options.minQuality ?? 'muito_alto';
   return enrichOne(input, {
     rows: [input],
-    quality: 'muito_alta',
+    quality: qualityFilterFromMinQuality(minQuality),
     maxDecisionMakers: options.maxDecisionMakers ?? 8,
     keywords: options.keywords,
+    decisionMakerSearch: {
+      minQuality,
+      requireEmail: options.requireEmail,
+      requirePhone: options.requirePhone,
+      onlyMobilePhone: options.onlyMobilePhone,
+      emailType: options.emailType,
+      excludeGenericContacts: options.excludeGenericContacts,
+      requireNamedEmail: options.requireNamedEmail,
+      requireDecisionMakerMatch: options.requireDecisionMakerMatch,
+      requireRealDecisionMaker: options.requireRealDecisionMaker,
+      requireDecisionMakerProfile: options.requireDecisionMakerProfile,
+      requireDecisionMakerContact: options.requireDecisionMakerContact,
+      requireDecisionMakerPhone: options.requireDecisionMakerPhone,
+    },
+    workerOptions: {
+      signal: options.signal,
+      requestId: options.requestId,
+      deadline: options.deadline,
+    },
   }, createBatchContext(), true);
+}
+
+export function shouldSearchDecisionMakers(
+  input: DecisionMakerSearchInput,
+  currentEvidence: DecisionMakerSearchEvidence = {},
+): boolean {
+  const hasExplicitRequirement = Boolean(
+    input.requireDecisionMakerMatch
+    || input.requireRealDecisionMaker
+    || input.requireDecisionMakerProfile
+    || input.requireDecisionMakerContact
+    || input.requireDecisionMakerPhone,
+  );
+  if (hasExplicitRequirement) return true;
+
+  const hasUnmetContactRequirement = Boolean(
+    (input.requireEmail && !currentEvidence.hasValidEmail)
+    || (input.requirePhone && !currentEvidence.hasValidPhone)
+    || (input.onlyMobilePhone && !currentEvidence.hasMobilePhone)
+    || (input.emailType === 'corporate' && !currentEvidence.hasCorporateEmail)
+    || (input.emailType === 'non_corporate' && !currentEvidence.hasNonCorporateEmail)
+    || (input.excludeGenericContacts
+      && currentEvidence.hasGenericEmail
+      && !currentEvidence.hasNonGenericEmail
+      && !currentEvidence.hasValidPhone)
+    || (input.requireNamedEmail && !currentEvidence.hasNamedPartnerEmail)
+  );
+  if (hasUnmetContactRequirement || input.minQuality === 'muito_alto') return true;
+  if (input.minQuality === 'baixo' || input.minQuality === 'medio') return false;
+
+  const hasSufficientEvidence = Boolean(currentEvidence.hasValidContact)
+    && Boolean(currentEvidence.hasVerifiedCompanyData || currentEvidence.hasNamedPartnerEmail);
+  return !hasSufficientEvidence;
 }
 
 async function enrichOne(
   rawInput: CompanyInput,
-  request: BatchRequest,
+  request: EnrichmentRequest,
   context: BatchContext,
   includeBelowQuality = false,
 ): Promise<LeadResult> {
   const cleaned = cleanInput(rawInput);
   const input = await enrichInput(cleaned, context);
   const displayName = nonEmpty(input.nomeFantasia, input.razaoSocial, input.cnpj) ?? input.cnpj;
-  const resolved = await cached(context.linkedinCache, linkedinCacheKey(input), () => resolveLinkedInUrl(input));
+  const resolved = await cached(context.linkedinCache, linkedinCacheKey(input), () => resolveLinkedInUrl(input, request.workerOptions));
 
   if (!resolved.linkedinUrl) {
     return {
@@ -96,21 +188,29 @@ async function enrichOne(
   const linkedinUrl = resolved.linkedinUrl;
   const domain = domainFromUrl(input.site) ?? domainFromEmail(input.email);
   const shouldExtractCompany = request.quality !== 'baixa';
-  const shouldSearchDecisionMakers = request.quality === 'alta' || request.quality === 'muito_alta';
   const companyProfile = shouldExtractCompany
     ? await cached(context.companyCache, linkedinUrl, () => context.workerLimit(() => extractCompany(
       linkedinUrl,
       onlyDigits(input.cnpj),
       displayName,
       { domain, city: input.cidade, uf: input.uf, cnae: input.cnae },
+      request.workerOptions,
     )))
     : skippedCompanyProfile(linkedinUrl);
+  assertInfrastructureResult(companyProfile, 'Falha de infraestrutura durante a extracao da empresa.');
+  const decisionSearchInput = request.decisionMakerSearch ?? {
+    minQuality: minQualityFromQualityFilter(request.quality),
+  };
+  const needsDecisionMakers = shouldSearchDecisionMakers(
+    decisionSearchInput,
+    decisionMakerSearchEvidence(input, companyProfile),
+  );
   const companyName = nonEmpty(companyProfile.name, input.nomeFantasia, input.razaoSocial, displayName) ?? displayName;
   const workerDomain = domain ?? domainFromUrl(companyProfile.website);
-  const decisionResponse = shouldSearchDecisionMakers
+  const decisionResponse = needsDecisionMakers
     ? await cached(
       context.decisionCache,
-      decisionCacheKey(companyName, linkedinUrl, workerDomain, request),
+      decisionCacheKey(companyName, linkedinUrl, workerDomain, input, request),
       () => context.workerLimit(() => searchDecisionMakers({
         companyName,
         linkedinUrl,
@@ -119,9 +219,11 @@ async function enrichOne(
         keywords: request.keywords?.length ? request.keywords : DEFAULT_KEYWORDS,
         partnerNames: splitPartners(input.socios),
         maxResults: request.maxDecisionMakers ?? 8,
-      })),
+      }, request.workerOptions)),
     )
     : skippedDecisionSearch();
+
+  assertDecisionSearchResult(decisionResponse);
 
   const decisionMakers = normalizeDecisionMakers(decisionResponse.decision_makers)
     .filter((person) => env.workerMode === 'demo' || person.associationVerified === true);
@@ -350,14 +452,120 @@ function linkedinCacheKey(input: CompanyInput): string {
   ].map((value) => String(value ?? '').trim().toLowerCase()).join('|');
 }
 
-function decisionCacheKey(companyName: string, linkedinUrl: string, domain: string | undefined, request: BatchRequest): string {
+function decisionCacheKey(
+  companyName: string,
+  linkedinUrl: string,
+  domain: string | undefined,
+  input: CompanyInput,
+  request: BatchRequest,
+): string {
   return [
     companyName,
     linkedinUrl,
     domain ?? '',
+    onlyDigits(input.cnpj),
+    ...splitPartners(input.socios),
     request.maxDecisionMakers ?? 8,
     ...(request.keywords?.length ? request.keywords : DEFAULT_KEYWORDS),
   ].map((value) => String(value).trim().toLowerCase()).join('|');
+}
+
+function qualityFilterFromMinQuality(value: LeadQualityLevel): QualityFilter {
+  if (value === 'muito_alto') return 'muito_alta';
+  if (value === 'alto') return 'alta';
+  if (value === 'medio') return 'normal';
+  return 'baixa';
+}
+
+function minQualityFromQualityFilter(value: QualityFilter): LeadQualityLevel {
+  if (value === 'muito_alta') return 'muito_alto';
+  if (value === 'alta') return 'alto';
+  if (value === 'normal') return 'medio';
+  return 'baixo';
+}
+
+function decisionMakerSearchEvidence(input: CompanyInput, companyProfile: CompanyProfile): DecisionMakerSearchEvidence {
+  const validEmails = splitContactValues(input.email).filter(isValidEmail);
+  const validPhones = splitContactValues(input.telefone).filter(isValidPhone);
+  const hasNonGenericEmail = validEmails.some((email) => !isGenericEmail(email));
+  const hasValidContact = hasNonGenericEmail || validPhones.length > 0;
+
+  return {
+    hasValidContact,
+    hasValidEmail: validEmails.length > 0,
+    hasValidPhone: validPhones.length > 0,
+    hasMobilePhone: validPhones.some(isMobilePhone),
+    hasCorporateEmail: validEmails.some(isCorporateEmail),
+    hasNonCorporateEmail: validEmails.some((email) => !isCorporateEmail(email)),
+    hasNonGenericEmail,
+    hasGenericEmail: validEmails.some(isGenericEmail),
+    hasVerifiedCompanyData: hasVerifiedCompanyData(companyProfile),
+    hasNamedPartnerEmail: validEmails.some((email) => !isGenericEmail(email) && emailMatchesPartner(email, splitPartners(input.socios))),
+  };
+}
+
+function hasVerifiedCompanyData(profile: CompanyProfile): boolean {
+  if (!profile.success || !profile.method_used || profile.method_used === 'skipped_by_quality') return false;
+  if (['worker_error', 'unavailable', 'real_exception'].includes(profile.method_used)) return false;
+  if (env.workerMode !== 'demo' && isDemoValue(profile.method_used)) return false;
+  return Boolean(
+    profile.industry
+    || profile.company_size
+    || profile.employees_min
+    || profile.employees_max
+    || profile.headquarters
+    || profile.followers
+    || profile.description,
+  );
+}
+
+function emailMatchesPartner(email: string, partnerNames: string[]): boolean {
+  const localPart = normalizeKey(email.split('@')[0] ?? '').replace(/\s+/g, '');
+  return partnerNames.some((partnerName) => {
+    const tokens = significantNameTokens(partnerName);
+    return tokens.length >= 2 && localPart.includes(tokens[0]) && localPart.includes(tokens[tokens.length - 1]);
+  });
+}
+
+function significantNameTokens(value: string): string[] {
+  const ignored = new Set(['da', 'das', 'de', 'do', 'dos', 'e', 'filho', 'junior', 'neto']);
+  return normalizeKey(value).split(' ').filter((token) => token.length > 1 && !ignored.has(token));
+}
+
+function assertDecisionSearchResult(result: DecisionSearchResult): void {
+  if (result.success || isFunctionalDecisionError(result.errorCode)) return;
+  if (!result.errorCode && result.source !== 'worker_error') return;
+
+  const message = result.warnings?.[0] ?? 'Falha de infraestrutura durante a busca de decisores.';
+  throwTypedWorkerError(result.errorCode ?? 'network_error', message);
+}
+
+function assertInfrastructureResult(
+  result: { success: boolean; errorCode?: WorkerErrorCode; error?: string },
+  fallbackMessage: string,
+): void {
+  if (result.success || !result.errorCode || isFunctionalWorkerError(result.errorCode)) return;
+  throwTypedWorkerError(result.errorCode, result.error ?? fallbackMessage);
+}
+
+function throwTypedWorkerError(code: WorkerErrorCode, message: string): never {
+  if (isBlockingWorkerError(code)) throw new LinkedinBlockingError(code, message);
+  throw new WorkerClientError(code, message);
+}
+
+function isBlockingWorkerError(code: WorkerErrorCode): boolean {
+  return code === 'auth_required' || code === 'challenge' || code === 'wrong_worker' || code === 'worker_unavailable';
+}
+
+function isFunctionalDecisionError(code: WorkerErrorCode | undefined): boolean {
+  return code === 'no_verified_match'
+    || code === 'no_verified_decision_maker'
+    || code === 'contact_not_available'
+    || code === 'rejected_by_filters';
+}
+
+function isFunctionalWorkerError(code: WorkerErrorCode): boolean {
+  return code === 'no_company_candidate' || code === 'company_not_verified' || isFunctionalDecisionError(code);
 }
 
 function cleanInput(input: CompanyInput): CompanyInput {

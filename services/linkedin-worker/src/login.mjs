@@ -15,7 +15,7 @@ const browser = await puppeteer.launch({
 const [page] = await browser.pages();
 await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: config.navigationTimeoutMs });
 console.log('Entre no LinkedIn na janela aberta. Resolva qualquer verificacao manualmente.');
-console.log(`A sessao sera guardada somente em: ${config.profileDirectory}`);
+console.log('A sessao sera guardada somente no perfil local configurado.');
 
 const terminal = readline.createInterface({ input: process.stdin, output: process.stdout });
 await terminal.question('Quando a pagina inicial do LinkedIn estiver aberta, pressione Enter aqui... ');
